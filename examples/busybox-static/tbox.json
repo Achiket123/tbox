@@ -1,0 +1,7 @@
+{
+  "entrypoint": ["/bin/busybox", "sh"],
+  "env": ["PATH=/bin"],
+  "workdir": "/",
+  "architecture": "arm64",
+  "description": "Static busybox binary — no external dependencies"
+}

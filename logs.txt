@@ -1,0 +1,164 @@
+Results:
+
+
+[[97;41m/home/achiket/Documents/personal_projects/tbox/internal/engine/extract.go:88[0m] - G115 (CWE-190): integer overflow conversion int64 -> uint32 (Confidence: MEDIUM, Severity: HIGH)
+    87: 
+  > 88: 		mode := os.FileMode(hdr.Mode & 0644)
+    89: 		f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY, mode)
+
+Autofix: 
+
+[[97;41m/home/achiket/Documents/personal_projects/tbox/internal/engine/extract.go:76[0m] - G115 (CWE-190): integer overflow conversion int64 -> uint32 (Confidence: MEDIUM, Severity: HIGH)
+    75: 	case tar.TypeDir:
+  > 76: 		mode := os.FileMode(hdr.Mode & 0755)
+    77: 		if hdr.Typeflag == tar.TypeDir {
+
+Autofix: 
+
+[[30;43m/home/achiket/Documents/personal_projects/tbox/internal/engine/run.go:74[0m] - G204 (CWE-78): Subprocess launched with variable (Confidence: HIGH, Severity: MEDIUM)
+    73: 	// Phase 5: Build and start proot command
+  > 74: 	cmd := exec.Command("proot", prootArgs...)
+    75: 	cmd.Stdout = stdoutLog
+
+Autofix: 
+
+[[30;43m/home/achiket/Documents/personal_projects/tbox/internal/engine/overlay.go:81[0m] - G204 (CWE-78): Subprocess launched with a potential tainted input or cmd arguments (Confidence: HIGH, Severity: MEDIUM)
+    80: func copyTree(src, dst string) error {
+  > 81: 	cmd := exec.Command("cp", "-a", src+"/.", dst)
+    82: 	cmd.Stdout = os.Stderr
+
+Autofix: 
+
+[[30;43m/home/achiket/Documents/personal_projects/tbox/internal/engine/overlay.go:58[0m] - G204 (CWE-78): Subprocess launched with a potential tainted input or cmd arguments (Confidence: HIGH, Severity: MEDIUM)
+    57: 	}
+  > 58: 	cmd := exec.Command("cp", "-al", src+"/.", dst)
+    59: 	// Use cp -al: archive mode + hardlinks
+
+Autofix: 
+
+[[30;43m/home/achiket/Documents/personal_projects/tbox/internal/state/state.go:111[0m] - G304 (CWE-22): Potential file inclusion via variable (Confidence: HIGH, Severity: MEDIUM)
+    110: func HashFile(path string) (string, error) {
+  > 111: 	f, err := os.Open(path)
+    112: 	if err != nil {
+
+Autofix: Consider using os.Root to scope file access under a fixed root (Go >=1.24). Prefer root.Open/root.Stat over os.Open/os.Stat to prevent directory traversal.
+
+[[30;43m/home/achiket/Documents/personal_projects/tbox/internal/state/state.go:30[0m] - G304 (CWE-22): Potential file inclusion via variable (Confidence: HIGH, Severity: MEDIUM)
+    29: 	path := statePath(cid)
+  > 30: 	data, err := os.ReadFile(path)
+    31: 	if err != nil {
+
+Autofix: Consider using os.Root to scope file access under a fixed root (Go >=1.24). Prefer root.Open/root.Stat over os.Open/os.Stat to prevent directory traversal.
+
+[[30;43m/home/achiket/Documents/personal_projects/tbox/internal/logs/tail.go:30[0m] - G304 (CWE-22): Potential file inclusion via variable (Confidence: HIGH, Severity: MEDIUM)
+    29: 	path := logPath(cid, "stdout.log")
+  > 30: 	f, err := os.Open(path)
+    31: 	if err != nil {
+
+Autofix: Consider using os.Root to scope file access under a fixed root (Go >=1.24). Prefer root.Open/root.Stat over os.Open/os.Stat to prevent directory traversal.
+
+[[30;43m/home/achiket/Documents/personal_projects/tbox/internal/logs/tail.go:20[0m] - G304 (CWE-22): Potential file inclusion via variable (Confidence: HIGH, Severity: MEDIUM)
+    19: 	// Open with O_APPEND for concurrent writes; O_CREATE if missing
+  > 20: 	f, _ := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+    21: 	return f
+
+Autofix: Consider using os.Root to scope file access under a fixed root (Go >=1.24). Prefer root.Open/root.Stat over os.Open/os.Stat to prevent directory traversal.
+
+[[30;43m/home/achiket/Documents/personal_projects/tbox/internal/engine/extract.go:89[0m] - G304 (CWE-22): Potential file inclusion via variable (Confidence: HIGH, Severity: MEDIUM)
+    88: 		mode := os.FileMode(hdr.Mode & 0644)
+  > 89: 		f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY, mode)
+    90: 		if err != nil {
+
+Autofix: Consider using os.Root to scope file access under a fixed root (Go >=1.24). Prefer root.Open/root.Stat over os.Open/os.Stat to prevent directory traversal.
+
+[[30;43m/home/achiket/Documents/personal_projects/tbox/internal/engine/extract.go:17[0m] - G304 (CWE-22): Potential file inclusion via variable (Confidence: HIGH, Severity: MEDIUM)
+    16: func SafeExtract(src, dst string) error {
+  > 17: 	f, err := os.Open(src)
+    18: 	if err != nil {
+
+Autofix: Consider using os.Root to scope file access under a fixed root (Go >=1.24). Prefer root.Open/root.Stat over os.Open/os.Stat to prevent directory traversal.
+
+[[30;43m/home/achiket/Documents/personal_projects/tbox/internal/engine/extract.go:105[0m] - G305 (CWE-22): File traversal when extracting zip/tar archive (Confidence: HIGH, Severity: MEDIUM)
+    104: 	case tar.TypeLink:
+  > 105: 		linkTarget := filepath.Join(filepath.Dir(target), hdr.Linkname)
+    106: 		return os.Link(linkTarget, target)
+
+Autofix: 
+
+[[30;43m/home/achiket/Documents/personal_projects/tbox/internal/engine/extract.go:56[0m] - G305 (CWE-22): File traversal when extracting zip/tar archive (Confidence: HIGH, Severity: MEDIUM)
+    55: 				// Resolve symlink target relative to container root
+  > 56: 				linkTarget := filepath.Join(absRoot, link)
+    57: 				linkClean := filepath.Clean(linkTarget)
+
+Autofix: 
+
+[[30;43m/home/achiket/Documents/personal_projects/tbox/internal/engine/extract.go:45[0m] - G305 (CWE-22): File traversal when extracting zip/tar archive (Confidence: HIGH, Severity: MEDIUM)
+    44: 		// Resolve the final path and ensure it stays inside dst
+  > 45: 		target := filepath.Join(absRoot, hdr.Name)
+    46: 		clean := filepath.Clean(target)
+
+Autofix: 
+
+[[30;43m/home/achiket/Documents/personal_projects/tbox/internal/logs/tail.go:20[0m] - G302 (CWE-276): Expect file permissions to be 0600 or less (Confidence: HIGH, Severity: MEDIUM)
+    19: 	// Open with O_APPEND for concurrent writes; O_CREATE if missing
+  > 20: 	f, _ := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+    21: 	return f
+
+Autofix: 
+
+[[30;43m/home/achiket/Documents/personal_projects/tbox/internal/logs/tail.go:17[0m] - G301 (CWE-276): Expect directory permissions to be 0750 or less (Confidence: HIGH, Severity: MEDIUM)
+    16: 	logDir := filepath.Join(termux.AppPrivateDir(), "containers", cid, "logs")
+  > 17: 	_ = os.MkdirAll(logDir, 0755) // ignore error; will fail later if needed
+    18: 	path := filepath.Join(logDir, name)
+
+Autofix: 
+
+[[30;43m/home/achiket/Documents/personal_projects/tbox/internal/engine/run.go:50[0m] - G301 (CWE-276): Expect directory permissions to be 0750 or less (Confidence: HIGH, Severity: MEDIUM)
+    49: 	if _, err := os.Stat(imageRoot); os.IsNotExist(err) {
+  > 50: 		if err := os.MkdirAll(imageRoot, 0755); err != nil {
+    51: 			return -1, fmt.Errorf("create image dir: %w", err)
+
+Autofix: 
+
+[[30;43m/home/achiket/Documents/personal_projects/tbox/internal/engine/overlay.go:34[0m] - G301 (CWE-276): Expect directory permissions to be 0750 or less (Confidence: HIGH, Severity: MEDIUM)
+    33: 	for _, sub := range []string{"config", "secrets", "ipc", "health"} {
+  > 34: 		if err := os.MkdirAll(filepath.Join(tboxDir, sub), 0755); err != nil {
+    35: 			return "", fmt.Errorf("create /tbox/%s: %w", sub, err)
+
+Autofix: 
+
+[[30;43m/home/achiket/Documents/personal_projects/tbox/internal/engine/overlay.go:28[0m] - G301 (CWE-276): Expect directory permissions to be 0750 or less (Confidence: HIGH, Severity: MEDIUM)
+    27: 	tboxDir := filepath.Join(dst, "tbox")
+  > 28: 	if err := os.MkdirAll(tboxDir, 0755); err != nil {
+    29: 		return "", fmt.Errorf("create /tbox dir: %w", err)
+
+Autofix: 
+
+[[30;43m/home/achiket/Documents/personal_projects/tbox/internal/engine/overlay.go:22[0m] - G301 (CWE-276): Expect directory permissions to be 0750 or less (Confidence: HIGH, Severity: MEDIUM)
+    21: 	// Create container directory structure
+  > 22: 	if err := os.MkdirAll(dst, 0755); err != nil {
+    23: 		return "", fmt.Errorf("create overlay dir: %w", err)
+
+Autofix: 
+
+[[30;43m/home/achiket/Documents/personal_projects/tbox/internal/engine/extract.go:99[0m] - G301 (CWE-276): Expect directory permissions to be 0750 or less (Confidence: HIGH, Severity: MEDIUM)
+    98: 		// Create parent dirs if needed
+  > 99: 		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+    100: 			return err
+
+Autofix: 
+
+[[30;43m/home/achiket/Documents/personal_projects/tbox/internal/engine/extract.go:84[0m] - G301 (CWE-276): Expect directory permissions to be 0750 or less (Confidence: HIGH, Severity: MEDIUM)
+    83: 		// Create parent dirs if needed
+  > 84: 		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+    85: 			return err
+
+Autofix: 
+
+[1;36mSummary:[0m
+  Gosec  : dev
+  Files  : 11
+  Lines  : 1156
+  Nosec  : 1
+  Issues : [1;31m22[0m
+

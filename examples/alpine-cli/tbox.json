@@ -1,0 +1,7 @@
+{
+  "entrypoint": ["/bin/sh"],
+  "env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],
+  "workdir": "/",
+  "architecture": "arm64",
+  "description": "Alpine Linux CLI tools (musl, curl, jq, ca-certificates)"
+}
