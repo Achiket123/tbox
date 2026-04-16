@@ -34,9 +34,9 @@ func main() {
 
 	// run command
 	runCmd := &cobra.Command{
-		Use:   "run <image.tgz> -- <command>",
+		Use:   "run <image.tgz> <command> [args...]",
 		Short: "Run a command in a container",
-		Args:  cobra.MinimumNArgs(2), // image.tgz + -- + cmd
+		Args:  cobra.MinimumNArgs(2), // image.tgz + at least one command arg
 		RunE:  runContainer,
 	}
 	runCmd.Flags().StringArrayP("env", "e", []string{}, "Set environment variables")
@@ -107,13 +107,16 @@ func setupSignalForwarding() {
 }
 
 // runContainer implements 'tbox run'
+
 func runContainer(cmd *cobra.Command, args []string) error {
-	// Parse: image.tgz -- command [args...]
-	imagePath := args[0]
-	if args[1] != "--" {
-		return fmt.Errorf("expected '--' separator before command")
+	// Parse: image.tgz <command> [args...]
+	// Note: Cobra strips '--', so we don't require it
+	if len(args) < 2 {
+		return fmt.Errorf("usage: tbox run <image.tgz> <command> [args...]")
 	}
-	containerCmd := args[2:]
+
+	imagePath := args[0]
+	containerCmd := args[1:] // Everything after image path is the command
 
 	// Extract flags
 	envVars, _ := cmd.Flags().GetStringArray("env")
