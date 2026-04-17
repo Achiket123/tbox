@@ -32,6 +32,11 @@ type Config struct {
 // RunContainer executes cmd inside container using proot.
 // Blocks until the process exits. Returns exit code and any error.
 func RunContainer(cfg Config) (int, error) {
+
+	prootTmp := filepath.Join(termux.AppPrivateDir(), "tmp")
+	if err := os.MkdirAll(prootTmp, 0700); err != nil {
+		return -1, fmt.Errorf("create proot tmp dir: %w", err)
+	}
 	// Generate container ID (content-addressable by image + timestamp)
 	cid, err := generateCID(cfg.ImagePath)
 	if err != nil {
@@ -74,6 +79,9 @@ func RunContainer(cfg Config) (int, error) {
 	cmd := exec.Command("proot", prootArgs...)
 	cmd.Stdout = io.MultiWriter(stdoutLog, os.Stdout)
 	cmd.Stderr = io.MultiWriter(stderrLog, os.Stderr, &bytes.Buffer{}) // capture for filtering
+	cmd.Env = append(os.Environ(),
+		"PROOT_TMP_DIR="+filepath.Join(termux.AppPrivateDir(), "tmp"),
+	)
 	if err := cmd.Start(); err != nil {
 		return -1, fmt.Errorf("start proot: %w", err)
 	}
@@ -193,7 +201,7 @@ func buildProotArgs(overlayPath string, cfg Config) []string {
 	)
 
 	// Entry point command
-	args = append(args, "--")
+	// args = append(args, "--")
 	args = append(args, cfg.Entrypoint...)
 
 	return args

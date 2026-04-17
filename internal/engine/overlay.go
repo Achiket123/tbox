@@ -78,7 +78,13 @@ func validatePath(p string) error {
 
 // copyTree creates a full recursive copy of src at dst
 func copyTree(src, dst string) error {
-	cmd := exec.Command("cp", "-a", src+"/.", dst)
+	if err := validatePath(src); err != nil {
+		return fmt.Errorf("invalid src: %w", err)
+	}
+	if err := validatePath(dst); err != nil {
+		return fmt.Errorf("invalid dst: %w", err)
+	}
+	cmd := exec.Command("cp", "-rP", src+"/.", dst)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
