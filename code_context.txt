@@ -1,36 +1,56 @@
 # Code Context Analysis
 
-Generated: 2026-04-17T00:09:49+05:30
-Files Scanned: 13
+Generated: 2026-04-17T13:40:35+05:30
+Files Scanned: 14
 Analysis Tools: regex, gosec, eslint, flawfinder
 
 ## Security Summary
 
-**Total Issues: 27**
+**Total Issues: 24**
 
 - 🔴 CRITICAL: 0
-- 🟠 HIGH: 2
-- 🟡 MEDIUM: 22
-- 🟢 LOW: 3
+- 🟠 HIGH: 4
+- 🟡 MEDIUM: 20
+- 🟢 LOW: 0
 
 **Issues by Tool:**
-- gosec: 25
+- gosec: 22
 - regex: 2
 
 ---
 
 ## File: internal/engine/extract.go
-Language: go | Tokens: 687 | Size: 2749 bytes
+Language: go | Tokens: 710 | Size: 2841 bytes
 
 **⚠️ Security Issues:**
 
-🟡 **[MEDIUM]** Line 85 - G304
+🟠 **[HIGH]** Line 88 - G115
+   *integer overflow conversion int64 -> uint32*
+   Tool: gosec | Confidence: MEDIUM | CWE: 190
+   ```
+   87: 
+88: 		mode := os.FileMode(hdr.Mode & 0644)
+89: 		f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY, mode)
+
+   ```
+
+🟠 **[HIGH]** Line 76 - G115
+   *integer overflow conversion int64 -> uint32*
+   Tool: gosec | Confidence: MEDIUM | CWE: 190
+   ```
+   75: 	case tar.TypeDir:
+76: 		mode := os.FileMode(hdr.Mode & 0755)
+77: 		if hdr.Typeflag == tar.TypeDir {
+
+   ```
+
+🟡 **[MEDIUM]** Line 89 - G304
    *Potential file inclusion via variable*
    Tool: gosec | Confidence: HIGH | CWE: 22
    ```
-   84: 		}
-85: 		f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY, os.FileMode(hdr.Mode))
-86: 		if err != nil {
+   88: 		mode := os.FileMode(hdr.Mode & 0644)
+89: 		f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY, mode)
+90: 		if err != nil {
 
    ```
 
@@ -44,23 +64,23 @@ Language: go | Tokens: 687 | Size: 2749 bytes
 
    ```
 
-🟡 **[MEDIUM]** Line 101 - G305
+🟡 **[MEDIUM]** Line 105 - G305
    *File traversal when extracting zip/tar archive*
    Tool: gosec | Confidence: HIGH | CWE: 22
    ```
-   100: 	case tar.TypeLink:
-101: 		linkTarget := filepath.Join(filepath.Dir(target), hdr.Linkname)
-102: 		return os.Link(linkTarget, target)
+   104: 	case tar.TypeLink:
+105: 		linkTarget := filepath.Join(filepath.Dir(target), hdr.Linkname)
+106: 		return os.Link(linkTarget, target)
 
    ```
 
-🟡 **[MEDIUM]** Line 58 - G305
+🟡 **[MEDIUM]** Line 56 - G305
    *File traversal when extracting zip/tar archive*
    Tool: gosec | Confidence: HIGH | CWE: 22
    ```
-   57: 				// Resolve symlink target relative to container root
-58: 				linkTarget := filepath.Join(absRoot, link)
-59: 				linkClean := filepath.Clean(linkTarget)
+   55: 				// Resolve symlink target relative to container root
+56: 				linkTarget := filepath.Join(absRoot, link)
+57: 				linkClean := filepath.Clean(linkTarget)
 
    ```
 
@@ -74,23 +94,23 @@ Language: go | Tokens: 687 | Size: 2749 bytes
 
    ```
 
-🟡 **[MEDIUM]** Line 95 - G301
+🟡 **[MEDIUM]** Line 99 - G301
    *Expect directory permissions to be 0750 or less*
    Tool: gosec | Confidence: HIGH | CWE: 276
    ```
-   94: 		// Create parent dirs if needed
-95: 		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-96: 			return err
+   98: 		// Create parent dirs if needed
+99: 		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+100: 			return err
 
    ```
 
-🟡 **[MEDIUM]** Line 82 - G301
+🟡 **[MEDIUM]** Line 84 - G301
    *Expect directory permissions to be 0750 or less*
    Tool: gosec | Confidence: HIGH | CWE: 276
    ```
-   81: 		// Create parent dirs if needed
-82: 		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-83: 			return err
+   83: 		// Create parent dirs if needed
+84: 		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+85: 			return err
 
    ```
 
@@ -141,8 +161,6 @@ func SafeExtract(src, dst string) error {
 		// Resolve the final path and ensure it stays inside dst
 		target := filepath.Join(absRoot, hdr.Name)
 		clean := filepath.Clean(target)
-
-		// SECURITY: Reject path traversal attempts
 		if !strings.HasPrefix(clean, absRoot+string(os.PathSeparator)) && clean != absRoot {
 			return fmt.Errorf("unsafe archive: path escapes container: %s", hdr.Name)
 		}
@@ -172,14 +190,20 @@ func SafeExtract(src, dst string) error {
 func extractEntry(tr *tar.Reader, hdr *tar.Header, target string) error {
 	switch hdr.Typeflag {
 	case tar.TypeDir:
-		return os.MkdirAll(target, os.FileMode(hdr.Mode))
+		mode := os.FileMode(hdr.Mode & 0755)
+		if hdr.Typeflag == tar.TypeDir {
+			mode |= 0111 // ensure execute bit for directories
+		}
+		return os.MkdirAll(target, mode)
 
 	case tar.TypeReg:
 		// Create parent dirs if needed
 		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 			return err
 		}
-		f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY, os.FileMode(hdr.Mode))
+
+		mode := os.FileMode(hdr.Mode & 0644)
+		f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY, mode)
 		if err != nil {
 			return err
 		}
@@ -203,71 +227,72 @@ func extractEntry(tr *tar.Reader, hdr *tar.Header, target string) error {
 		return nil
 	}
 }
+
 ```
 
 ## File: internal/engine/overlay.go
-Language: go | Tokens: 652 | Size: 2608 bytes
+Language: go | Tokens: 785 | Size: 3141 bytes
 
 **⚠️ Security Issues:**
 
-🟡 **[MEDIUM]** Line 60 - G204
+🟡 **[MEDIUM]** Line 81 - G204
    *Subprocess launched with a potential tainted input or cmd arguments*
    Tool: gosec | Confidence: HIGH | CWE: 78
    ```
-   59: func copyTree(src, dst string) error {
-60: 	cmd := exec.Command("cp", "-a", src+"/.", dst)
-61: 	cmd.Stdout = os.Stderr
+   80: func copyTree(src, dst string) error {
+81: 	cmd := exec.Command("cp", "-a", src+"/.", dst)
+82: 	cmd.Stdout = os.Stderr
 
    ```
 
-🟡 **[MEDIUM]** Line 52 - G204
+🟡 **[MEDIUM]** Line 58 - G204
    *Subprocess launched with a potential tainted input or cmd arguments*
    Tool: gosec | Confidence: HIGH | CWE: 78
    ```
-   51: 	// Use cp -al: archive mode + hardlinks
-52: 	cmd := exec.Command("cp", "-al", src+"/.", dst)
-53: 	cmd.Stdout = os.Stderr
+   57: 	}
+58: 	cmd := exec.Command("cp", "-al", src+"/.", dst)
+59: 	// Use cp -al: archive mode + hardlinks
 
    ```
 
-🟡 **[MEDIUM]** Line 33 - G301
+🟡 **[MEDIUM]** Line 34 - G301
    *Expect directory permissions to be 0750 or less*
    Tool: gosec | Confidence: HIGH | CWE: 276
    ```
-   32: 	for _, sub := range []string{"config", "secrets", "ipc", "health"} {
-33: 		if err := os.MkdirAll(filepath.Join(tboxDir, sub), 0755); err != nil {
-34: 			return "", fmt.Errorf("create /tbox/%s: %w", sub, err)
+   33: 	for _, sub := range []string{"config", "secrets", "ipc", "health"} {
+34: 		if err := os.MkdirAll(filepath.Join(tboxDir, sub), 0755); err != nil {
+35: 			return "", fmt.Errorf("create /tbox/%s: %w", sub, err)
 
    ```
 
-🟡 **[MEDIUM]** Line 27 - G301
+🟡 **[MEDIUM]** Line 28 - G301
    *Expect directory permissions to be 0750 or less*
    Tool: gosec | Confidence: HIGH | CWE: 276
    ```
-   26: 	tboxDir := filepath.Join(dst, "tbox")
-27: 	if err := os.MkdirAll(tboxDir, 0755); err != nil {
-28: 		return "", fmt.Errorf("create /tbox dir: %w", err)
+   27: 	tboxDir := filepath.Join(dst, "tbox")
+28: 	if err := os.MkdirAll(tboxDir, 0755); err != nil {
+29: 		return "", fmt.Errorf("create /tbox dir: %w", err)
 
    ```
 
-🟡 **[MEDIUM]** Line 21 - G301
+🟡 **[MEDIUM]** Line 22 - G301
    *Expect directory permissions to be 0750 or less*
    Tool: gosec | Confidence: HIGH | CWE: 276
    ```
-   20: 	// Create container directory structure
-21: 	if err := os.MkdirAll(dst, 0755); err != nil {
-22: 		return "", fmt.Errorf("create overlay dir: %w", err)
+   21: 	// Create container directory structure
+22: 	if err := os.MkdirAll(dst, 0755); err != nil {
+23: 		return "", fmt.Errorf("create overlay dir: %w", err)
 
    ```
 
-🟠 **[HIGH]** Line 52 - Command Injection
+🟠 **[HIGH]** Line 58 - Command Injection
    *Dynamic command construction - potential command injection*
    Tool: regex
    ```
    cmd := exec.Command("cp", "-al", src+"/.", dst)
    ```
 
-🟠 **[HIGH]** Line 60 - Command Injection
+🟠 **[HIGH]** Line 81 - Command Injection
    *Dynamic command construction - potential command injection*
    Tool: regex
    ```
@@ -283,6 +308,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/tbox-run/tbox/internal/termux"
 )
@@ -325,11 +351,31 @@ func PrepareOverlay(imageHash, cid string, cfg Config) (string, error) {
 
 // hardlinkTree creates a hardlinked copy of src at dst (CoW base)
 func hardlinkTree(src, dst string) error {
-	// Use cp -al: archive mode + hardlinks
+	if err := validatePath(src); err != nil {
+		return fmt.Errorf("invalid src: %w", err)
+	}
+	if err := validatePath(dst); err != nil {
+		return fmt.Errorf("invalid dst: %w", err)
+	}
 	cmd := exec.Command("cp", "-al", src+"/.", dst)
+	// Use cp -al: archive mode + hardlinks
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func validatePath(p string) error {
+	clean := filepath.Clean(p)
+	abs, err := filepath.Abs(clean)
+	if err != nil {
+		return err
+	}
+	// Ensure path is under Termux app-private dir
+	appDir := termux.AppPrivateDir()
+	if !strings.HasPrefix(abs, appDir) {
+		return fmt.Errorf("path %s escapes allowed directory %s", abs, appDir)
+	}
+	return nil
 }
 
 // copyTree creates a full recursive copy of src at dst
@@ -357,10 +403,11 @@ func imagePath(imageHash string) string {
 func overlayPath(cid string) string {
 	return filepath.Join(termux.AppPrivateDir(), "containers", cid, "overlay")
 }
+
 ```
 
 ## File: internal/logs/tail.go
-Language: go | Tokens: 458 | Size: 1834 bytes
+Language: go | Tokens: 467 | Size: 1870 bytes
 
 **⚠️ Security Issues:**
 
@@ -374,53 +421,33 @@ Language: go | Tokens: 458 | Size: 1834 bytes
 
    ```
 
-🟡 **[MEDIUM]** Line 21 - G304
+🟡 **[MEDIUM]** Line 20 - G304
    *Potential file inclusion via variable*
    Tool: gosec | Confidence: HIGH | CWE: 22
    ```
-   20: 	// Open with O_APPEND for concurrent writes; O_CREATE if missing
-21: 	f, _ := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-22: 	return f
+   19: 	// Open with O_APPEND for concurrent writes; O_CREATE if missing
+20: 	f, _ := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+21: 	return f
 
    ```
 
-🟡 **[MEDIUM]** Line 21 - G302
+🟡 **[MEDIUM]** Line 20 - G302
    *Expect file permissions to be 0600 or less*
    Tool: gosec | Confidence: HIGH | CWE: 276
    ```
-   20: 	// Open with O_APPEND for concurrent writes; O_CREATE if missing
-21: 	f, _ := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-22: 	return f
+   19: 	// Open with O_APPEND for concurrent writes; O_CREATE if missing
+20: 	f, _ := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+21: 	return f
 
    ```
 
-🟡 **[MEDIUM]** Line 18 - G301
+🟡 **[MEDIUM]** Line 17 - G301
    *Expect directory permissions to be 0750 or less*
    Tool: gosec | Confidence: HIGH | CWE: 276
    ```
-   17: 	logDir := filepath.Join(termux.AppPrivateDir(), "containers", cid, "logs")
-18: 	os.MkdirAll(logDir, 0755) // ignore error; will fail later if needed
-19: 	path := filepath.Join(logDir, name)
-
-   ```
-
-🟢 **[LOW]** Line 47 - G104
-   *Errors unhandled*
-   Tool: gosec | Confidence: HIGH | CWE: 703
-   ```
-   46: 		if n > 0 {
-47: 			os.Stdout.Write(buf[:n])
-48: 			pos += int64(n)
-
-   ```
-
-🟢 **[LOW]** Line 18 - G104
-   *Errors unhandled*
-   Tool: gosec | Confidence: HIGH | CWE: 703
-   ```
-   17: 	logDir := filepath.Join(termux.AppPrivateDir(), "containers", cid, "logs")
-18: 	os.MkdirAll(logDir, 0755) // ignore error; will fail later if needed
-19: 	path := filepath.Join(logDir, name)
+   16: 	logDir := filepath.Join(termux.AppPrivateDir(), "containers", cid, "logs")
+17: 	_ = os.MkdirAll(logDir, 0755) // ignore error; will fail later if needed
+18: 	path := filepath.Join(logDir, name)
 
    ```
 
@@ -435,14 +462,13 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/tbox-run/tbox/internal/engine"
 	"github.com/tbox-run/tbox/internal/termux"
 )
 
 // OpenLog opens (or creates) a log file for a container
 func OpenLog(cid, name string) *os.File {
 	logDir := filepath.Join(termux.AppPrivateDir(), "containers", cid, "logs")
-	os.MkdirAll(logDir, 0755) // ignore error; will fail later if needed
+	_ = os.MkdirAll(logDir, 0755) // ignore error; will fail later if needed
 	path := filepath.Join(logDir, name)
 	// Open with O_APPEND for concurrent writes; O_CREATE if missing
 	f, _ := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
@@ -450,8 +476,9 @@ func OpenLog(cid, name string) *os.File {
 }
 
 // TailLog prints container logs to stdout.
-// If follow=true, polls for new content until container stops.
+// If follow=true, polls for new content.
 // Uses position-tracking Seek — safe for concurrent writers.
+// Note: Does not auto-detect container stop; use Ctrl-C to exit follow mode.
 func TailLog(cid string, follow bool) error {
 	path := logPath(cid, "stdout.log")
 	f, err := os.Open(path)
@@ -471,7 +498,7 @@ func TailLog(cid string, follow bool) error {
 
 		n, err := f.Read(buf)
 		if n > 0 {
-			os.Stdout.Write(buf[:n])
+			_, _ = os.Stdout.Write(buf[:n]) // ignore write errors, continue reading
 			pos += int64(n)
 		}
 
@@ -480,11 +507,8 @@ func TailLog(cid string, follow bool) error {
 		}
 
 		if err == io.EOF {
-			// Container done?
-			if !engine.ContainerRunning(cid) {
-				break
-			}
 			// Poll interval: 100ms (balance responsiveness vs CPU)
+			// User presses Ctrl-C to exit follow mode
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
@@ -501,198 +525,31 @@ func TailLog(cid string, follow bool) error {
 func logPath(cid, name string) string {
 	return filepath.Join(termux.AppPrivateDir(), "containers", cid, "logs", name)
 }
-```
 
-## File: internal/state/state.go
-Language: go | Tokens: 907 | Size: 3628 bytes
-
-**⚠️ Security Issues:**
-
-🟡 **[MEDIUM]** Line 114 - G304
-   *Potential file inclusion via variable*
-   Tool: gosec | Confidence: HIGH | CWE: 22
-   ```
-   113: func HashFile(path string) (string, error) {
-114: 	f, err := os.Open(path)
-115: 	if err != nil {
-
-   ```
-
-🟡 **[MEDIUM]** Line 32 - G304
-   *Potential file inclusion via variable*
-   Tool: gosec | Confidence: HIGH | CWE: 22
-   ```
-   31: 	path := statePath(cid)
-32: 	data, err := os.ReadFile(path)
-33: 	if err != nil {
-
-   ```
-
-🟡 **[MEDIUM]** Line 70 - G301
-   *Expect directory permissions to be 0750 or less*
-   Tool: gosec | Confidence: HIGH | CWE: 276
-   ```
-   69: 	dir := containerDir(cid)
-70: 	if err := os.MkdirAll(dir, 0755); err != nil {
-71: 		return fmt.Errorf("create state dir: %w", err)
-
-   ```
-
-```go
-// internal/state/state.go
-package state
-
-import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"fmt"
-	"io"
-	"os"
-	"path/filepath"
-	"time"
-
-	"github.com/tbox-run/tbox/internal/engine"
-	"github.com/tbox-run/tbox/internal/termux"
-)
-
-// State represents a container's lifecycle state
-type State struct {
-	CID       string    `json:"cid"`
-	ImageHash string    `json:"image_hash"`
-	ProotPID  int       `json:"proot_pid"`
-	StartedAt time.Time `json:"started_at"`
-	Status    string    `json:"status"` // running, exited, stopped
-	ExitCode  int       `json:"exit_code,omitempty"`
-}
-
-// Read loads container state from disk.
-// Returns (State{}, error) — callers MUST check error before using State.
-func Read(cid string) (State, error) {
-	path := statePath(cid)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return State{}, fmt.Errorf("container %s not found", cid)
-		}
-		return State{}, fmt.Errorf("read state %s: %w", cid, err)
-	}
-
-	var st State
-	if err := json.Unmarshal(data, &st); err != nil {
-		return State{}, fmt.Errorf("corrupt state %s: %w", cid, err)
-	}
-	return st, nil
-}
-
-// ReadWithHeal loads state and auto-heals stale 'running' if PID is gone
-func ReadWithHeal(cid string) (State, error) {
-	st, err := Read(cid)
-	if err != nil {
-		return State{}, err
-	}
-
-	// Auto-heal: if status is 'running' but PID is dead, mark as crashed
-	if st.Status == "running" && !engine.ProcessExists(st.ProotPID) {
-		st.Status = "exited"
-		st.ExitCode = -1 // crashed / unknown
-		// Best-effort write; ignore error (read-only path may fail)
-		_ = WithStateLock(cid, func() error {
-			return WriteAtomic(cid, st)
-		})
-	}
-	return st, nil
-}
-
-// WriteAtomic persists state atomically via temp+fsync+rename.
-// Caller MUST hold per-container lock (use WithStateLock).
-func WriteAtomic(cid string, st State) error {
-	dir := containerDir(cid)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("create state dir: %w", err)
-	}
-
-	// Write to temp file first
-	tmp, err := os.CreateTemp(dir, "state-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath) // cleanup on failure
-
-	// Marshal with indentation for readability
-	data, err := json.MarshalIndent(st, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal state: %w", err)
-	}
-
-	if _, err := tmp.Write(data); err != nil {
-		return fmt.Errorf("write temp: %w", err)
-	}
-	if err := tmp.Sync(); err != nil { // fsync!
-		return fmt.Errorf("fsync temp: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp: %w", err)
-	}
-
-	// Atomic rename — POSIX guarantees this is atomic
-	return os.Rename(tmpPath, statePath(cid))
-}
-
-// GenerateCID creates a short, unique container ID from image path + randomness
-func GenerateCID(imagePath string) (string, error) {
-	// Hash: imagePath + timestamp + random bytes
-	h := sha256.New()
-	h.Write([]byte(imagePath))
-	h.Write([]byte(time.Now().Format(time.RFC3339Nano)))
-	h.Write(make([]byte, 8)) // 8 bytes of zero for Phase 1; replace with crypto/rand in Phase 2
-	return hex.EncodeToString(h.Sum(nil))[:12], nil // 12 hex chars = 48 bits
-}
-
-// HashFile computes SHA256 of a file (for content-addressable caching)
-func HashFile(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-// statePath returns the path to a container's state.json
-func statePath(cid string) string {
-	return filepath.Join(containerDir(cid), "state.json")
-}
 ```
 
 ## File: internal/engine/run.go
-Language: go | Tokens: 1599 | Size: 6399 bytes
+Language: go | Tokens: 1947 | Size: 7789 bytes
 
 **⚠️ Security Issues:**
 
-🟡 **[MEDIUM]** Line 73 - G204
+🟡 **[MEDIUM]** Line 74 - G204
    *Subprocess launched with variable*
    Tool: gosec | Confidence: HIGH | CWE: 78
    ```
-   72: 	// Phase 5: Build and start proot command
-73: 	cmd := exec.Command("proot", prootArgs...)
-74: 	cmd.Stdout = stdoutLog
+   73: 	// Phase 5: Build and start proot command
+74: 	cmd := exec.Command("proot", prootArgs...)
+75: 	cmd.Stdout = io.MultiWriter(stdoutLog, os.Stdout)
 
    ```
 
-🟡 **[MEDIUM]** Line 49 - G301
+🟡 **[MEDIUM]** Line 50 - G301
    *Expect directory permissions to be 0750 or less*
    Tool: gosec | Confidence: HIGH | CWE: 276
    ```
-   48: 	if _, err := os.Stat(imageRoot); os.IsNotExist(err) {
-49: 		if err := os.MkdirAll(imageRoot, 0755); err != nil {
-50: 			return -1, fmt.Errorf("create image dir: %w", err)
+   49: 	if _, err := os.Stat(imageRoot); os.IsNotExist(err) {
+50: 		if err := os.MkdirAll(imageRoot, 0755); err != nil {
+51: 			return -1, fmt.Errorf("create image dir: %w", err)
 
    ```
 
@@ -705,6 +562,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -770,15 +628,18 @@ func RunContainer(cfg Config) (int, error) {
 
 	// Phase 5: Build and start proot command
 	cmd := exec.Command("proot", prootArgs...)
-	cmd.Stdout = stdoutLog
-	cmd.Stderr = io.MultiWriter(stderrLog, &bytes.Buffer{}) // capture for filtering
-
+	cmd.Stdout = io.MultiWriter(stdoutLog, os.Stdout)
+	cmd.Stderr = io.MultiWriter(stderrLog, os.Stderr, &bytes.Buffer{}) // capture for filtering
 	if err := cmd.Start(); err != nil {
 		return -1, fmt.Errorf("start proot: %w", err)
 	}
 
 	// Store PID atomically for signal forwarding
-	atomic.StoreInt32(&globalProotPID, int32(cmd.Process.Pid))
+	pid := cmd.Process.Pid
+	if pid > math.MaxInt32 || pid < math.MinInt32 {
+		return -1, fmt.Errorf("proot PID %d out of range for atomic storage", pid)
+	}
+	atomic.StoreInt32(&globalProotPID, int32(pid))
 
 	// Write initial state under lock
 	if err := state.WithStateLock(cid, func() error {
@@ -882,11 +743,11 @@ func buildProotArgs(overlayPath string, cfg Config) []string {
 	// proot behavior flags
 	args = append(args,
 		"--kill-on-exit", // Ensure children die with proot
-		"--quiet",        // Reduce noise (we handle errors ourselves)
+		// "--quiet",        // Reduce noise (we handle errors ourselves)
 	)
 
 	// Entry point command
-	args = append(args, "--")
+	// args = append(args, "--")
 	args = append(args, cfg.Entrypoint...)
 
 	return args
@@ -923,140 +784,232 @@ func hashFile(path string) (string, error) {
 // Global PID reference for signal forwarding (set by RunContainer)
 var globalProotPID int32
 
+// ListContainers prints a table of all known containers.
+// Reads state files without acquiring locks (relies on atomic rename).
+func ListContainers() error {
+	containersDir := filepath.Join(termux.AppPrivateDir(), "containers")
+
+	entries, err := os.ReadDir(containersDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("No containers found")
+			return nil
+		}
+		return fmt.Errorf("read containers dir: %w", err)
+	}
+
+	if len(entries) == 0 {
+		fmt.Println("No containers found")
+		return nil
+	}
+
+	// Print header
+	fmt.Printf("%-14s %-20s %-10s %-20s\n", "CONTAINER ID", "IMAGE", "STATUS", "STARTED")
+
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		cid := e.Name()
+
+		// Read state without lock (relies on atomic rename guarantee)
+		st, err := state.ReadWithHeal(cid)
+		if err != nil {
+			continue // skip unreadable states
+		}
+
+		// Truncate image hash for display
+		image := st.ImageHash
+		if len(image) > 12 {
+			image = image[:12]
+		}
+
+		started := st.StartedAt.Format("2006-01-02 15:04")
+		fmt.Printf("%-14s %-20s %-10s %-20s\n", cid, image, st.Status, started)
+	}
+
+	return nil
+}
+
+func TailLogs(cid string, follow bool) error {
+	return logs.TailLog(cid, follow)
+}
+
 ```
 
-## File: internal/engine/process.go
-Language: go | Tokens: 328 | Size: 1315 bytes
+## File: internal/state/state.go
+Language: go | Tokens: 978 | Size: 3912 bytes
 
 **⚠️ Security Issues:**
 
-🟡 **[MEDIUM]** Line 26 - G304
+🟡 **[MEDIUM]** Line 111 - G304
    *Potential file inclusion via variable*
    Tool: gosec | Confidence: HIGH | CWE: 22
    ```
-   25: 	commPath := fmt.Sprintf("/proc/%d/comm", pid)
-26: 	data, err := os.ReadFile(commPath)
-27: 	if err != nil {
+   110: func HashFile(path string) (string, error) {
+111: 	f, err := os.Open(path)
+112: 	if err != nil {
+
+   ```
+
+🟡 **[MEDIUM]** Line 30 - G304
+   *Potential file inclusion via variable*
+   Tool: gosec | Confidence: HIGH | CWE: 22
+   ```
+   29: 	path := statePath(cid)
+30: 	data, err := os.ReadFile(path)
+31: 	if err != nil {
 
    ```
 
 ```go
-// internal/engine/process.go
-package engine
+// internal/state/state.go
+package state
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
-	"os"
-	"strings"
-	"syscall"
-)
-
-// processExists checks if a PID is currently alive
-func processExists(pid int) bool {
-	return syscall.Kill(pid, 0) == nil
-}
-
-// safeKill verifies the process is actually proot before sending signal
-// Mitigates PID recycling risk on Android
-func safeKill(pid int, sig syscall.Signal) error {
-	// First: basic existence check
-	if err := syscall.Kill(pid, 0); err != nil {
-		return err
-	}
-
-	// Second: verify comm name (Android /proc is readable for own UID)
-	commPath := fmt.Sprintf("/proc/%d/comm", pid)
-	data, err := os.ReadFile(commPath)
-	if err != nil {
-		// SELinux may block read; fall back to PID-only (documented risk)
-		return syscall.Kill(pid, sig)
-	}
-
-	comm := strings.TrimSpace(string(data))
-	// Accept proot binary names across architectures
-	if comm != "proot" && !strings.HasPrefix(comm, "proot-") {
-		return fmt.Errorf(
-			"PID %d is '%s', not proot — refusing to signal (PID recycling?)",
-			pid, comm)
-	}
-
-	return syscall.Kill(pid, sig)
-}
-
-// containerRunning checks if the container's proot process is still alive
-func containerRunning(cid string) bool {
-	st, err := state.Read(cid)
-	if err != nil {
-		return false
-	}
-	if st.Status != "running" {
-		return false
-	}
-	return processExists(st.ProotPID)
-}
-```
-
-## File: internal/termux/fs.go
-Language: go | Tokens: 260 | Size: 1043 bytes
-
-**⚠️ Security Issues:**
-
-🟢 **[LOW]** Line 30 - G104
-   *Errors unhandled*
-   Tool: gosec | Confidence: HIGH | CWE: 703
-   ```
-   29: 	probePath := probe.Name()
-30: 	probe.Close()
-31: 	defer os.Remove(probePath)
-
-   ```
-
-```go
-// internal/termux/fs.go
-package termux
-
-import (
+	"io"
 	"os"
 	"path/filepath"
+	"syscall"
+	"time"
 )
 
-// AppPrivateDir returns the Termux-sandboxed base directory for tbox data.
-// Guaranteed to be on an ext4/f2fs filesystem that supports flock.
-func AppPrivateDir() string {
-	// Termux home: /data/data/com.termux/files/home
-	// We store tbox data in a subdirectory
+// State represents a container's lifecycle state
+type State struct {
+	CID       string    `json:"cid"`
+	ImageHash string    `json:"image_hash"`
+	ProotPID  int       `json:"proot_pid"`
+	StartedAt time.Time `json:"started_at"`
+	Status    string    `json:"status"` // running, exited, stopped
+	ExitCode  int       `json:"exit_code,omitempty"`
+}
+
+// Read loads container state from disk.
+// Returns (State{}, error) — callers MUST check error before using State.
+func Read(cid string) (State, error) {
+	path := statePath(cid)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return State{}, fmt.Errorf("container %s not found", cid)
+		}
+		return State{}, fmt.Errorf("read state %s: %w", cid, err)
+	}
+
+	var st State
+	if err := json.Unmarshal(data, &st); err != nil {
+		return State{}, fmt.Errorf("corrupt state %s: %w", cid, err)
+	}
+	return st, nil
+}
+
+// ReadWithHeal loads state and auto-heals stale 'running' if PID is gone
+func ReadWithHeal(cid string) (State, error) {
+	st, err := Read(cid)
+	if err != nil {
+		return State{}, err
+	}
+
+	// Auto-heal: if status is 'running' but PID is dead, mark as crashed
+	if st.Status == "running" && !processExists(st.ProotPID) {
+		st.Status = "exited"
+		st.ExitCode = -1 // crashed / unknown
+		// Best-effort write; ignore error (read-only path may fail)
+		_ = WithStateLock(cid, func() error {
+			return WriteAtomic(cid, st)
+		})
+	}
+	return st, nil
+}
+
+// WriteAtomic persists state atomically via temp+fsync+rename.
+// Caller MUST hold per-container lock (use WithStateLock).
+func WriteAtomic(cid string, st State) error {
+	dir := containerDir(cid)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("create state dir: %w", err)
+	}
+
+	// Write to temp file first
+	tmp, err := os.CreateTemp(dir, "state-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath) // cleanup on failure
+
+	// Marshal with indentation for readability
+	data, err := json.MarshalIndent(st, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal state: %w", err)
+	}
+
+	if _, err := tmp.Write(data); err != nil {
+		return fmt.Errorf("write temp: %w", err)
+	}
+	if err := tmp.Sync(); err != nil { // fsync!
+		return fmt.Errorf("fsync temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp: %w", err)
+	}
+
+	// Atomic rename — POSIX guarantees this is atomic
+	return os.Rename(tmpPath, statePath(cid))
+}
+
+// GenerateCID creates a short, unique container ID from image path + randomness
+func GenerateCID(imagePath string) (string, error) {
+	h := sha256.New()
+	h.Write([]byte(imagePath))
+	h.Write([]byte(time.Now().Format(time.RFC3339Nano)))
+	h.Write(make([]byte, 8)) // 8 bytes of zero for Phase 1
+	return hex.EncodeToString(h.Sum(nil))[:12], nil
+}
+
+// HashFile computes SHA256 of a file (for content-addressable caching)
+func HashFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// statePath returns the path to a container's state.json
+func statePath(cid string) string {
+	return filepath.Join(containerDir(cid), "state.json")
+}
+
+// containerDir returns the directory for a container's state files
+func containerDir(cid string) string {
+	// Inline AppPrivateDir to avoid import cycle with termux package
 	home := os.Getenv("HOME")
 	if home == "" {
 		home = "/data/data/com.termux/files/home"
 	}
-	return filepath.Join(home, ".tbox")
+	return filepath.Join(home, ".tbox", "containers", cid)
 }
 
-// SupportsHardlinks probes whether dir's filesystem supports hardlinks.
-// Creates and immediately removes two probe files; returns false on any error.
-func SupportsHardlinks(dir string) bool {
-	// Create a temporary probe file
-	probe, err := os.CreateTemp(dir, ".tbox_hl_probe_*")
-	if err != nil {
-		return false
-	}
-	probePath := probe.Name()
-	probe.Close()
-	defer os.Remove(probePath)
-
-	// Try to create a hardlink to it
-	linkPath := probePath + ".link"
-	if err := os.Link(probePath, linkPath); err != nil {
-		return false
-	}
-	defer os.Remove(linkPath)
-
-	return true
+// processExists checks if a PID is currently alive (duplicated to avoid cycle)
+func processExists(pid int) bool {
+	return syscall.Kill(pid, 0) == nil
 }
+
 ```
 
 ## File: cmd/tbox/main.go
-Language: go | Tokens: 981 | Size: 3925 bytes
+Language: go | Tokens: 1013 | Size: 4054 bytes
 
 ```go
 // cmd/tbox/main.go
@@ -1095,9 +1048,9 @@ func main() {
 
 	// run command
 	runCmd := &cobra.Command{
-		Use:   "run <image.tgz> -- <command>",
+		Use:   "run <image.tgz> <command> [args...]",
 		Short: "Run a command in a container",
-		Args:  cobra.MinimumNArgs(2), // image.tgz + -- + cmd
+		Args:  cobra.MinimumNArgs(2), // image.tgz + at least one command arg
 		RunE:  runContainer,
 	}
 	runCmd.Flags().StringArrayP("env", "e", []string{}, "Set environment variables")
@@ -1168,13 +1121,16 @@ func setupSignalForwarding() {
 }
 
 // runContainer implements 'tbox run'
+
 func runContainer(cmd *cobra.Command, args []string) error {
-	// Parse: image.tgz -- command [args...]
-	imagePath := args[0]
-	if args[1] != "--" {
-		return fmt.Errorf("expected '--' separator before command")
+	// Parse: image.tgz <command> [args...]
+	// Note: Cobra strips '--', so we don't require it
+	if len(args) < 2 {
+		return fmt.Errorf("usage: tbox run <image.tgz> <command> [args...]")
 	}
-	containerCmd := args[2:]
+
+	imagePath := args[0]
+	containerCmd := args[1:] // Everything after image path is the command
 
 	// Extract flags
 	envVars, _ := cmd.Flags().GetStringArray("env")
@@ -1225,7 +1181,7 @@ func showLogs(cmd *cobra.Command, args []string) error {
 ```
 
 ## File: internal/engine/stop.go
-Language: go | Tokens: 537 | Size: 2151 bytes
+Language: go | Tokens: 553 | Size: 2213 bytes
 
 ```go
 // internal/engine/stop.go
@@ -1233,6 +1189,7 @@ package engine
 
 import (
 	"fmt"
+	"os"
 	"syscall"
 	"time"
 
@@ -1286,7 +1243,8 @@ func StopContainer(cid string) error {
 
 	// Phase 3: SIGKILL fallback
 	if err := safeKill(prootPID, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
-		fmt.Fprintf(stderrLog, "Warning: SIGKILL failed: %v\n", err)
+		// FIX: Use os.Stderr instead of undefined stderrLog
+		fmt.Fprintf(os.Stderr, "Warning: SIGKILL failed: %v\n", err)
 	}
 	time.Sleep(500 * time.Millisecond) // Let kernel clean up
 
@@ -1309,6 +1267,7 @@ func markStopped(cid string) error {
 		return state.WriteAtomic(cid, st)
 	})
 }
+
 ```
 
 ## File: internal/platform/android/proot.go
@@ -1384,49 +1343,119 @@ func GetAPILevel() int {
 }
 ```
 
-## File: internal/state/lock.go
-Language: go | Tokens: 254 | Size: 1018 bytes
+## File: internal/engine/process.go
+Language: go | Tokens: 354 | Size: 1417 bytes
 
 ```go
-// internal/state/lock.go
-package state
+// internal/engine/process.go
+package engine
 
 import (
-	"context"
 	"fmt"
-	"path/filepath"
-	"time"
+	"os"
+	"strings"
+	"syscall"
 
-	"github.com/gofrs/flock"
-	"github.com/tbox-run/tbox/internal/termux"
+	"github.com/tbox-run/tbox/internal/state"
 )
 
-// WithStateLock acquires flock on <cid>/state.lock, runs fn, releases.
-// Times out after 5 seconds; returns error if lock not acquired.
-func WithStateLock(cid string, fn func() error) error {
-	lockPath := filepath.Join(containerDir(cid), "state.lock")
-	fileLock := flock.New(lockPath)
+// processExists checks if a PID is currently alive
+func processExists(pid int) bool {
+	return syscall.Kill(pid, 0) == nil
+}
 
-	// Try to acquire lock with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+// safeKill verifies the process is actually proot before sending signal
+// Mitigates PID recycling risk on Android
+func safeKill(pid int, sig syscall.Signal) error {
+	// First: basic existence check
+	if err := syscall.Kill(pid, 0); err != nil {
+		return err
+	}
 
-	locked, err := fileLock.TryLockContext(ctx, 100*time.Millisecond)
+	// Second: verify comm name (Android /proc is readable for own UID)
+	// #nosec G304 — /proc is system directory; pid verified by processExists()
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
 	if err != nil {
-		return fmt.Errorf("lock error: %w", err)
+		// SELinux may block read; fall back to PID-only (documented risk)
+		return syscall.Kill(pid, sig)
 	}
-	if !locked {
-		return fmt.Errorf("could not acquire state lock for %s (timeout)", cid)
-	}
-	defer fileLock.Unlock()
 
-	return fn()
+	comm := strings.TrimSpace(string(data))
+	// Accept proot binary names across architectures
+	if comm != "proot" && !strings.HasPrefix(comm, "proot-") {
+		return fmt.Errorf(
+			"PID %d is '%s', not proot — refusing to signal (PID recycling?)",
+			pid, comm)
+	}
+
+	return syscall.Kill(pid, sig)
 }
 
-// containerDir returns the directory for a container's state files
-func containerDir(cid string) string {
-	return filepath.Join(termux.AppPrivateDir(), "containers", cid)
+// containerRunning checks if the container's proot process is still alive
+func containerRunning(cid string) bool {
+	st, err := state.Read(cid)
+	if err != nil {
+		return false
+	}
+	if st.Status != "running" {
+		return false
+	}
+	return processExists(st.ProotPID)
 }
+
+```
+
+## File: internal/termux/fs.go
+Language: go | Tokens: 302 | Size: 1211 bytes
+
+```go
+// internal/termux/fs.go
+package termux
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+)
+
+// AppPrivateDir returns the Termux-sandboxed base directory for tbox data.
+// Guaranteed to be on an ext4/f2fs filesystem that supports flock.
+func AppPrivateDir() string {
+	// Termux home: /data/data/com.termux/files/home
+	// We store tbox data in a subdirectory
+	home := os.Getenv("HOME")
+	if home == "" {
+		home = "/data/data/com.termux/files/home"
+	}
+	return filepath.Join(home, ".tbox")
+}
+
+// SupportsHardlinks probes whether dir's filesystem supports hardlinks.
+// Creates and immediately removes two probe files; returns false on any error.
+func SupportsHardlinks(dir string) bool {
+	// Create a temporary probe file
+	probe, err := os.CreateTemp(dir, ".tbox_hl_probe_*")
+	if err != nil {
+		return false
+	}
+	probePath := probe.Name()
+
+	if err := probe.Close(); err != nil {
+		// Log but don't fail — probe cleanup is best-effort
+		fmt.Fprintf(os.Stderr, "Warning: failed to close probe file: %v\n", err)
+	}
+	defer os.Remove(probePath)
+
+	// Try to create a hardlink to it
+	linkPath := probePath + ".link"
+	if err := os.Link(probePath, linkPath); err != nil {
+		return false
+	}
+	defer os.Remove(linkPath)
+
+	return true
+}
+
 ```
 
 ## File: test/e2e/basic_run_test.sh
@@ -1456,6 +1485,45 @@ output=$(tbox run ./examples/alpine-cli.tgz -- sh -c 'curl -s https://example.co
 echo "✓ All basic tests passed"
 ```
 
+## File: internal/state/lock.go
+Language: go | Tokens: 190 | Size: 763 bytes
+
+```go
+// internal/state/lock.go
+package state
+
+import (
+	"context"
+	"fmt"
+	"path/filepath"
+	"time"
+
+	"github.com/gofrs/flock"
+)
+
+// WithStateLock acquires flock on <cid>/state.lock, runs fn, releases.
+// Times out after 5 seconds; returns error if lock not acquired.
+func WithStateLock(cid string, fn func() error) error {
+	lockPath := filepath.Join(containerDir(cid), "state.lock")
+	fileLock := flock.New(lockPath)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	locked, err := fileLock.TryLockContext(ctx, 100*time.Millisecond)
+	if err != nil {
+		return fmt.Errorf("lock error: %w", err)
+	}
+	if !locked {
+		return fmt.Errorf("could not acquire state lock for %s (timeout)", cid)
+	}
+	defer fileLock.Unlock()
+
+	return fn()
+}
+
+```
+
 ## File: test/e2e/concurrent_test.sh
 Language: shell | Tokens: 137 | Size: 548 bytes
 
@@ -1481,9 +1549,28 @@ wait $PID1 $PID2 2>/dev/null || true
 echo "✓ All concurrent tests passed"
 ```
 
+## File: test.sh
+Language: shell | Tokens: 78 | Size: 312 bytes
+
+```shell
+#!/bin/bash
+
+# 1. Ensure dependencies are fetched
+go mod tidy
+
+# 2. Verify no import cycles
+go list -f '{{.ImportPath}} {{.Deps}}' ./... | grep -v "github.com/tbox-run/tbox"
+
+# 3. Build the project
+go build ./cmd/tbox
+
+# 4. Run static analysis
+gosec ./...  # Should show only MEDIUM/LOW issues (no CRITICAL/HIGH)
+```
+
 
 ---
 
 **Summary:**
-- Files Included: 13 / 13
-- Total Tokens: 7447 / 10000000000
+- Files Included: 14 / 14
+- Total Tokens: 8161 / 10000000000

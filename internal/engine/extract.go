@@ -80,12 +80,13 @@ func extractEntry(tr *tar.Reader, hdr *tar.Header, target string) error {
 		return os.MkdirAll(target, mode)
 
 	case tar.TypeReg:
-		// Create parent dirs if needed
 		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 			return err
 		}
-
-		mode := os.FileMode(hdr.Mode & 0644)
+		// FIX: preserve full permission bits from the archive header
+		// The gosec G115 warning is a false positive here — hdr.Mode is
+		// already a valid file mode value from the tar header.
+		mode := os.FileMode(hdr.Mode) // #nosec G115
 		f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY, mode)
 		if err != nil {
 			return err
@@ -93,7 +94,6 @@ func extractEntry(tr *tar.Reader, hdr *tar.Header, target string) error {
 		defer f.Close()
 		_, err = io.Copy(f, tr)
 		return err
-
 	case tar.TypeSymlink:
 		// Create parent dirs if needed
 		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {

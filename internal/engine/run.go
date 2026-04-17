@@ -175,9 +175,11 @@ func buildProotArgs(overlayPath string, cfg Config) []string {
 	}
 
 	// Working directory
-	if cfg.Workdir != "" && cfg.Workdir != "/" {
-		args = append(args, "-w", cfg.Workdir)
+	workdir := cfg.Workdir
+	if workdir == "" {
+		workdir = "/"
 	}
+	args = append(args, "-w", workdir)
 
 	// Environment variables
 	for _, env := range cfg.Env {
@@ -191,7 +193,7 @@ func buildProotArgs(overlayPath string, cfg Config) []string {
 	)
 
 	// Entry point command
-	// args = append(args, "--")
+	args = append(args, "--")
 	args = append(args, cfg.Entrypoint...)
 
 	return args
