@@ -2,6 +2,9 @@
 set -e
 
 echo "→ Testing basic execution..."
+# NOTE: Cobra strips '--' before arg parsing, so 'tbox run image -- cmd' and
+# 'tbox run image cmd' are equivalent. The '--' is kept here for readability
+# and Docker-style familiarity; it does not affect flag parsing.
 output=$(tbox run ./examples/alpine-cli.tgz -- echo hello 2>&1)
 [[ "$output" == *"hello"* ]] || { echo "FAIL: expected 'hello'"; exit 1; }
 

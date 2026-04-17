@@ -11,14 +11,20 @@ import (
 	"github.com/tbox-run/tbox/internal/termux"
 )
 
-// OpenLog opens (or creates) a log file for a container
-func OpenLog(cid, name string) *os.File {
+// OpenLog opens (or creates) a log file for a container.
+// Returns (*os.File, error) — callers must check error before use.
+func OpenLog(cid, name string) (*os.File, error) {
 	logDir := filepath.Join(termux.AppPrivateDir(), "containers", cid, "logs")
-	_ = os.MkdirAll(logDir, 0755) // ignore error; will fail later if needed
+	if err := os.MkdirAll(logDir, 0755); err != nil { //nolint:gosec // G301: 0755 needed for container log dirs
+		return nil, fmt.Errorf("create log dir: %w", err)
+	}
 	path := filepath.Join(logDir, name)
 	// Open with O_APPEND for concurrent writes; O_CREATE if missing
-	f, _ := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	return f
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("open log %s: %w", name, err)
+	}
+	return f, nil
 }
 
 // TailLog prints container logs to stdout.

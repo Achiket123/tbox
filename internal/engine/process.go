@@ -15,8 +15,13 @@ func processExists(pid int) bool {
 	return syscall.Kill(pid, 0) == nil
 }
 
-// safeKill verifies the process is actually proot before sending signal
-// Mitigates PID recycling risk on Android
+// safeKill verifies the process is actually proot before sending signal.
+// TOCTOU note: there is an inherent race between the existence/comm checks
+// and the actual kill(2) call — a process can exit and its PID be recycled
+// between the two. The /proc/comm check reduces (but does NOT eliminate) the
+// risk. On Android this window is acceptably small; a fully race-free solution
+// would require pidfd_open(2) (Linux ≥ 5.3), not yet universally available
+// on Termux-targeted devices.
 func safeKill(pid int, sig syscall.Signal) error {
 	// First: basic existence check
 	if err := syscall.Kill(pid, 0); err != nil {
@@ -42,7 +47,8 @@ func safeKill(pid int, sig syscall.Signal) error {
 	return syscall.Kill(pid, sig)
 }
 
-// containerRunning checks if the container's proot process is still alive
+// containerRunning checks if the container's proot process is still alive.
+// Used by ListContainers to display accurate live/dead status.
 func containerRunning(cid string) bool {
 	st, err := state.Read(cid)
 	if err != nil {

@@ -10,14 +10,25 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/tbox-run/tbox/internal/logs"
 	"github.com/tbox-run/tbox/internal/platform/android"
 	"github.com/tbox-run/tbox/internal/state"
 	"github.com/tbox-run/tbox/internal/termux"
 )
+
+// globalProotPID holds the PID of the active proot process for signal forwarding.
+// Written atomically by RunContainer; read by GetCurrentPID (called from main).
+var globalProotPID int32
+
+// GetCurrentPID returns the PID of the currently running proot process, or 0.
+func GetCurrentPID() int32 {
+	return atomic.LoadInt32(&globalProotPID)
+}
 
 // Config holds container execution parameters
 type Config struct {
@@ -66,22 +77,63 @@ func RunContainer(cfg Config) (int, error) {
 		return -1, fmt.Errorf("prepare overlay: %w", err)
 	}
 
-	// Phase 3: Build proot arguments
-	prootArgs := buildProotArgs(overlayPath, cfg)
-
-	// Phase 4: Setup log files
-	stdoutLog := logs.OpenLog(cid, "stdout.log")
-	stderrLog := logs.OpenLog(cid, "stderr.log")
+	// Phase 3: Setup log files
+	stdoutLog, err := logs.OpenLog(cid, "stdout.log")
+	if err != nil {
+		return -1, fmt.Errorf("open stdout log: %w", err)
+	}
 	defer stdoutLog.Close()
+
+	stderrLog, err := logs.OpenLog(cid, "stderr.log")
+	if err != nil {
+		return -1, fmt.Errorf("open stderr log: %w", err)
+	}
 	defer stderrLog.Close()
 
-	// Phase 5: Build and start proot command
+	// Phase 5: Build and start proot command.
+	// stderrBuf MUST be created before cmd.Start() — reassigning cmd.Stderr
+	// after Start() is silently ignored by the OS (B2 fix).
+	var stderrBuf bytes.Buffer
+	// Finalize environment (P3 fix: unset LD_PRELOAD, add guest PATH)
+	sanitizedEnv := android.GetProotEnv(cfg.Env)
+
+	// Set PROOT_L2S_DIR if link2symlink is enabled
+	if prootLink2SymlinkEnabled() {
+		l2sDir := filepath.Join(overlayPath, ".l2s")
+		_ = os.MkdirAll(l2sDir, 0700)
+		sanitizedEnv = append(sanitizedEnv, "PROOT_L2S_DIR="+l2sDir)
+	}
+
+	prootArgs := buildProotArgs(overlayPath, cfg, sanitizedEnv)
+
 	cmd := exec.Command("proot", prootArgs...)
 	cmd.Stdout = io.MultiWriter(stdoutLog, os.Stdout)
-	cmd.Stderr = io.MultiWriter(stderrLog, os.Stderr, &bytes.Buffer{}) // capture for filtering
-	cmd.Env = append(os.Environ(),
-		"PROOT_TMP_DIR="+filepath.Join(termux.AppPrivateDir(), "tmp"),
-	)
+	cmd.Stderr = io.MultiWriter(stderrLog, os.Stderr, &stderrBuf)
+
+	// Environment for proot process itself
+	cmd.Env = sanitizedEnv
+
+	// Create PROOT_TMP_DIR before executing proot
+	tmpDir := filepath.Join(termux.AppPrivateDir(), "tmp")
+	_ = os.MkdirAll(tmpDir, 0755)
+
+	// CRITICAL: Termux proot requires the exact loader path to exist inside the guest
+	// for the bind-mount to succeed. We must create the identical path inside the overlay.
+	overlayTmpDir := filepath.Join(overlayPath, strings.TrimPrefix(tmpDir, "/"))
+	_ = os.MkdirAll(overlayTmpDir, 0755)
+
+	// We removed PROOT_TMP_DIR override. Termux proot will default to $PREFIX/tmp.
+	// We must ensure the overlay has $PREFIX/tmp created so proot can bind to it.
+	prefixTmp := "/data/data/com.termux/files/usr/tmp"
+	overlayPrefixTmp := filepath.Join(overlayPath, strings.TrimPrefix(prefixTmp, "/"))
+	_ = os.MkdirAll(overlayPrefixTmp, 0755)
+
+	// P3 fix: Hide SELinux to prevent apps/loaders from getting blocked or confused
+	selinuxDir := filepath.Join(overlayPath, "sys/fs/.empty")
+	_ = os.MkdirAll(selinuxDir, 0700)
+
+	// P3 fix: Termux proot extracts a loader into $PREFIX/tmp and executes it inside the guest.
+	// We must ensure this exact path exists in the overlay so the bind-mount succeeds.
 	if err := cmd.Start(); err != nil {
 		return -1, fmt.Errorf("start proot: %w", err)
 	}
@@ -100,6 +152,7 @@ func RunContainer(cfg Config) (int, error) {
 			ImageHash: imageHash,
 			ProotPID:  cmd.Process.Pid,
 			Status:    "running",
+			StartedAt: time.Now(), // L2 fix: must be set or ps shows year 0001
 		})
 	}); err != nil {
 		// Non-fatal: continue execution, state will be healed on next read
@@ -107,8 +160,6 @@ func RunContainer(cfg Config) (int, error) {
 	}
 
 	// Phase 6: BLOCKING wait for completion
-	var stderrBuf bytes.Buffer
-	cmd.Stderr = io.MultiWriter(stderrLog, &stderrBuf)
 	err = cmd.Wait()
 
 	// Determine exit code
@@ -159,23 +210,31 @@ func RunContainer(cfg Config) (int, error) {
 }
 
 // buildProotArgs constructs the proot command line
-func buildProotArgs(overlayPath string, cfg Config) []string {
+func buildProotArgs(overlayPath string, cfg Config, env []string) []string {
+	// Base rootfs bind. We omit -0 here as android.EnhanceProotArgs adds it.
 	args := []string{"-r", overlayPath}
 
-	// System binds (always)
+	if prootLink2SymlinkEnabled() {
+		args = append(args, "--link2symlink")
+	}
+
+	// P3 fix: Hide SELinux
+	selinuxDir := filepath.Join(overlayPath, "sys/fs/.empty")
+	args = append(args, "-b", selinuxDir+":/sys/fs/selinux")
+
+	// System binds (always required by proot)
 	args = append(args,
 		"-b", "/dev:/dev",
 		"-b", "/sys:/sys",
+		// L2 fix: /proc must always be bound. Proot has no internal /proc
+		// emulation — removing this bind breaks containers on all API levels.
+		// The recursion concern is mitigated by PROOT_NO_SECCOMP=1 if needed.
+		"-b", "/proc:/proc",
 	)
 
-	// Conditional /proc bind based on Android API level
-	if android.GetAPILevel() < 28 {
-		args = append(args, "-b", "/proc:/proc")
-	}
-	// API 28+: rely on proot's internal /proc emulation (avoids recursion)
-
-	// DNS resolver bind (Android-specific)
-	args = android.AddDNSBind(args)
+	// L1 fix: delegate Android-specific args (resolv.conf, future platform
+	// quirks) to EnhanceProotArgs — the abstraction layer that was bypassed.
+	args = android.EnhanceProotArgs(args)
 
 	// User-specified binds (appended last — user has final say on conflicts)
 	for _, bind := range cfg.Binds {
@@ -189,36 +248,25 @@ func buildProotArgs(overlayPath string, cfg Config) []string {
 	}
 	args = append(args, "-w", workdir)
 
-	// Environment variables
-	for _, env := range cfg.Env {
-		args = append(args, "-E", env)
-	}
-
-	// proot behavior flags
-	args = append(args,
-		"--kill-on-exit", // Ensure children die with proot
-		// "--quiet",        // Reduce noise (we handle errors ourselves)
-	)
-
-	// Entry point command
-	// args = append(args, "--")
 	args = append(args, cfg.Entrypoint...)
 
 	return args
 }
 
+// harmlessPatterns are compiled once at init time for efficiency.
+// L4 fix: use regexp.MustCompile — strings.ReplaceAll did literal matching,
+// so patterns with `.*` never matched real proot output.
+var harmlessPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?m)^.*ptrace: Operation not permitted.*$\n?`),
+	regexp.MustCompile(`(?m)^.*seccomp: .* not supported.*$\n?`),
+	regexp.MustCompile(`(?m)^.*warning: unable to.*$\n?`),
+}
+
 // filterHarmlessPatterns removes expected proot warnings from stderr
 func filterHarmlessPatterns(stderr string) string {
-	// Known harmless patterns on Android
-	patterns := []string{
-		"ptrace: Operation not permitted",
-		"seccomp: .* not supported",
-		"warning: unable to.*",
-	}
 	result := stderr
-	for _, pat := range patterns {
-		// Simple substring removal (Phase 1; regex in Phase 2)
-		result = strings.ReplaceAll(result, pat, "")
+	for _, re := range harmlessPatterns {
+		result = re.ReplaceAllString(result, "")
 	}
 	return strings.TrimSpace(result)
 }
@@ -235,8 +283,7 @@ func hashFile(path string) (string, error) {
 	return state.HashFile(path)
 }
 
-// Global PID reference for signal forwarding (set by RunContainer)
-var globalProotPID int32
+// (globalProotPID and GetCurrentPID are declared at the top of this file)
 
 // ListContainers prints a table of all known containers.
 // Reads state files without acquiring locks (relies on atomic rename).
@@ -278,8 +325,15 @@ func ListContainers() error {
 			image = image[:12]
 		}
 
+		// R4 fix: use containerRunning for live status — state on disk may lag
+		// behind reality if the process exited without writing final state.
+		displayStatus := st.Status
+		if st.Status == "running" && !containerRunning(cid) {
+			displayStatus = "exited"
+		}
+
 		started := st.StartedAt.Format("2006-01-02 15:04")
-		fmt.Printf("%-14s %-20s %-10s %-20s\n", cid, image, st.Status, started)
+		fmt.Printf("%-14s %-20s %-10s %-20s\n", cid, image, displayStatus, started)
 	}
 
 	return nil

@@ -1,0 +1,6 @@
+{
+  "entrypoint": ["/bin/sh"],
+  "env": ["PATH=/usr/bin:/bin"],
+  "workdir": "/",
+  "architecture": "arm64"
+}

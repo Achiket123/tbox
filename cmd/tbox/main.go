@@ -6,15 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"sync/atomic"
 	"syscall"
 
 	"github.com/spf13/cobra"
 	"github.com/tbox-run/tbox/internal/engine"
 )
-
-// Global atomic PID for signal forwarding
-var globalProotPID int32
 
 func main() {
 	// Preflight: ensure proot is available
@@ -86,14 +82,16 @@ func preflight() error {
 	return nil
 }
 
-// setupSignalForwarding forwards SIGINT/SIGTERM to the proot child
+// setupSignalForwarding forwards SIGINT/SIGTERM to the proot child.
+// Reads the PID from engine.GetCurrentPID() — the same atomic the engine
+// writes — so the signal actually reaches proot (B1 fix).
 func setupSignalForwarding() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
 		sig := <-sigCh
-		pid := atomic.LoadInt32(&globalProotPID)
+		pid := engine.GetCurrentPID()
 		if pid > 0 {
 			// Forward signal to proot process
 			_ = syscall.Kill(int(pid), sig.(syscall.Signal))
@@ -135,7 +133,6 @@ func runContainer(cmd *cobra.Command, args []string) error {
 
 	// Run container (blocking)
 	exitCode, err := engine.RunContainer(cfg)
-	atomic.StoreInt32(&globalProotPID, 0) // clear PID after completion
 
 	if err != nil {
 		return err

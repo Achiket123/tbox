@@ -61,7 +61,17 @@ func SafeExtract(src, dst string) error {
 			}
 		}
 
-		if err := extractEntry(tr, hdr, clean); err != nil {
+		// SECURITY S1: Hardlinks use Linkname as a relative path within the
+		// archive. Apply the same escape check as for regular paths.
+		if hdr.Typeflag == tar.TypeLink {
+			linkTarget := filepath.Join(absRoot, hdr.Linkname)
+			linkClean := filepath.Clean(linkTarget)
+			if !strings.HasPrefix(linkClean, absRoot+string(os.PathSeparator)) && linkClean != absRoot {
+				return fmt.Errorf("unsafe archive: hardlink escapes container: %s -> %s", hdr.Name, hdr.Linkname)
+			}
+		}
+
+		if err := extractEntry(tr, hdr, clean, absRoot); err != nil {
 			return fmt.Errorf("extract %s: %w", hdr.Name, err)
 		}
 	}
@@ -69,21 +79,21 @@ func SafeExtract(src, dst string) error {
 	return nil
 }
 
-// extractEntry extracts a single tar entry to the target path
-func extractEntry(tr *tar.Reader, hdr *tar.Header, target string) error {
+// extractEntry extracts a single tar entry to the target path.
+// absRoot is the container root used to resolve hardlink targets consistently
+// with the escape checks performed in SafeExtract.
+func extractEntry(tr *tar.Reader, hdr *tar.Header, target, absRoot string) error {
 	switch hdr.Typeflag {
 	case tar.TypeDir:
-		mode := os.FileMode(hdr.Mode & 0755)
-		if hdr.Typeflag == tar.TypeDir {
-			mode |= 0111 // ensure execute bit for directories
-		}
-		return os.MkdirAll(target, mode)
+		// Mask to 12 permission bits; & prevents int64→uint32 overflow for
+		// malformed headers. #nosec G115 — masked value always fits in uint32.
+		mode := os.FileMode(hdr.Mode&0o7777) | 0111 // #nosec G115
+		return os.MkdirAll(target, mode)            //nolint:gosec // G301: container dirs need execute bits
 
 	case tar.TypeReg:
-		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil { //nolint:gosec // G301: container dirs need 0755 execute bits
 			return err
 		}
-		// FIX: preserve full permission bits from the archive header
 		// The gosec G115 warning is a false positive here — hdr.Mode is
 		// already a valid file mode value from the tar header.
 		mode := os.FileMode(hdr.Mode) // #nosec G115
@@ -94,15 +104,20 @@ func extractEntry(tr *tar.Reader, hdr *tar.Header, target string) error {
 		defer f.Close()
 		_, err = io.Copy(f, tr)
 		return err
+
 	case tar.TypeSymlink:
 		// Create parent dirs if needed
-		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil { //nolint:gosec // G301: container dirs need 0755 execute bits
 			return err
 		}
 		return os.Symlink(hdr.Linkname, target)
 
 	case tar.TypeLink:
-		linkTarget := filepath.Join(filepath.Dir(target), hdr.Linkname)
+		// R1 fix: resolve hardlink target against absRoot, not filepath.Dir(target).
+		// filepath.Dir(target) gives the destination parent, which is a different
+		// base than the escape check above used — causing an inconsistency that
+		// could let a crafted Linkname bypass the check.
+		linkTarget := filepath.Join(absRoot, hdr.Linkname)
 		return os.Link(linkTarget, target)
 
 	default:

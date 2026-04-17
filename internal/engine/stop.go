@@ -40,7 +40,8 @@ func StopContainer(cid string) error {
 	// SIGTERM first (graceful shutdown)
 	if err := safeKill(prootPID, syscall.SIGTERM); err != nil {
 		if err == syscall.ESRCH {
-			// Already dead
+			// Already dead — notify user rather than returning silently
+			fmt.Fprintf(os.Stderr, "Container %s is already stopped.\n", cid)
 			return markStopped(cid)
 		}
 		return fmt.Errorf("send SIGTERM to PID %d: %w", prootPID, err)
@@ -74,7 +75,8 @@ func markStopped(cid string) error {
 			return err
 		}
 		// CRITICAL: If RunContainer already wrote 'exited', preserve it
-		if st.Status == "exited" {
+		if st.Status == "exited" || st.Status == "stopped" {
+			fmt.Fprintf(os.Stderr, "Container %s is already stopped (status: %s).\n", cid, st.Status)
 			return nil // natural exit wins; don't overwrite exit code
 		}
 		st.Status = "stopped"

@@ -2,6 +2,7 @@
 package state
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -97,12 +98,17 @@ func WriteAtomic(cid string, st State) error {
 	return os.Rename(tmpPath, statePath(cid))
 }
 
-// GenerateCID creates a short, unique container ID from image path + randomness
+// GenerateCID creates a short, unique container ID from image path + randomness.
+// Uses crypto/rand so IDs are globally unique even for rapid concurrent runs.
 func GenerateCID(imagePath string) (string, error) {
 	h := sha256.New()
 	h.Write([]byte(imagePath))
 	h.Write([]byte(time.Now().Format(time.RFC3339Nano)))
-	h.Write(make([]byte, 8)) // 8 bytes of zero for Phase 1
+	rndBytes := make([]byte, 8)
+	if _, err := rand.Read(rndBytes); err != nil {
+		return "", fmt.Errorf("generate random bytes: %w", err)
+	}
+	h.Write(rndBytes)
 	return hex.EncodeToString(h.Sum(nil))[:12], nil
 }
 
