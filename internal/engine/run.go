@@ -72,9 +72,8 @@ func RunContainer(cfg Config) (int, error) {
 
 	// Phase 5: Build and start proot command
 	cmd := exec.Command("proot", prootArgs...)
-	cmd.Stdout = stdoutLog
-	cmd.Stderr = io.MultiWriter(stderrLog, &bytes.Buffer{}) // capture for filtering
-
+	cmd.Stdout = io.MultiWriter(stdoutLog, os.Stdout)
+	cmd.Stderr = io.MultiWriter(stderrLog, os.Stderr, &bytes.Buffer{}) // capture for filtering
 	if err := cmd.Start(); err != nil {
 		return -1, fmt.Errorf("start proot: %w", err)
 	}
@@ -188,11 +187,11 @@ func buildProotArgs(overlayPath string, cfg Config) []string {
 	// proot behavior flags
 	args = append(args,
 		"--kill-on-exit", // Ensure children die with proot
-		"--quiet",        // Reduce noise (we handle errors ourselves)
+		// "--quiet",        // Reduce noise (we handle errors ourselves)
 	)
 
 	// Entry point command
-	args = append(args, "--")
+	// args = append(args, "--")
 	args = append(args, cfg.Entrypoint...)
 
 	return args
