@@ -1,0 +1,87 @@
+#!/bin/sh
+# tbox network <create|ls|rm|connect|disconnect> [name]
+set -e
+
+TBOX_HOME="${TBOX_HOME:-$HOME/.tbox}"
+NETWORKS_DIR="$TBOX_HOME/networks"
+CONTAINERS_DIR="$TBOX_HOME/containers"
+mkdir -p "$NETWORKS_DIR"
+
+subcmd="${1:-}"
+shift
+
+case "$subcmd" in
+    create)
+        NAME="${1:-}"
+        [ -z "$NAME" ] && echo "Usage: tbox network create <name>" && exit 1
+        NDIR="$NETWORKS_DIR/$NAME"
+        [ -d "$NDIR" ] && echo "Network already exists: $NAME" && exit 1
+        mkdir -p "$NDIR"
+        echo "$NAME"     > "$NDIR/name"
+        date +%s         > "$NDIR/created"
+        touch              "$NDIR/members"   # one container name per line
+        touch              "$NDIR/proxies"   # socat pids
+        echo "Created network: $NAME"
+        ;;
+
+    ls)
+        printf "%-20s %-10s %s\n" "NETWORK" "CREATED" "MEMBERS"
+        for ndir in "$NETWORKS_DIR"/*/; do
+            [ -d "$ndir" ] || continue
+            name=$(cat "$ndir/name" 2>/dev/null || basename "$ndir")
+            ts=$(cat "$ndir/created" 2>/dev/null || echo 0)
+            created=$(date -d "@$ts" "+%Y-%m-%d %H:%M" 2>/dev/null || echo "unknown")
+            members=$(tr '\n' ',' < "$ndir/members" 2>/dev/null | sed 's/,$//')
+            printf "%-20s %-10s %s\n" "$name" "$created" "${members:-(empty)}"
+        done
+        ;;
+
+    rm)
+        NAME="${1:-}"
+        [ -z "$NAME" ] && echo "Usage: tbox network rm <name>" && exit 1
+        NDIR="$NETWORKS_DIR/$NAME"
+        [ -d "$NDIR" ] || { echo "Network not found: $NAME"; exit 1; }
+        # Kill proxies
+        while read pid; do
+            kill "$pid" 2>/dev/null || true
+        done < "$NDIR/proxies" 2>/dev/null
+        rm -rf "$NDIR"
+        echo "Removed network: $NAME"
+        ;;
+
+    connect)
+        NAME="${1:-}"
+        CONTAINER="${2:-}"
+        [ -z "$NAME" ] || [ -z "$CONTAINER" ] && \
+            echo "Usage: tbox network connect <network> <container>" && exit 1
+        NDIR="$NETWORKS_DIR/$NAME"
+        [ -d "$NDIR" ] || { echo "Network not found: $NAME"; exit 1; }
+        CDIR="$CONTAINERS_DIR/$CONTAINER"
+        [ -d "$CDIR" ] || { echo "Container not found: $CONTAINER"; exit 1; }
+
+        # Add to members if not already there
+        grep -qx "$CONTAINER" "$NDIR/members" 2>/dev/null || \
+            echo "$CONTAINER" >> "$NDIR/members"
+
+        # Rebuild /etc/hosts for all containers on this network
+        _rebuild_hosts "$NAME"
+        echo "Connected $CONTAINER to $NAME"
+        ;;
+
+    disconnect)
+        NAME="${1:-}"
+        CONTAINER="${2:-}"
+        NDIR="$NETWORKS_DIR/$NAME"
+        [ -d "$NDIR" ] || { echo "Network not found: $NAME"; exit 1; }
+        # Remove from members
+        grep -v "^$CONTAINER$" "$NDIR/members" > "$NDIR/members.tmp" && \
+            mv "$NDIR/members.tmp" "$NDIR/members"
+        _rebuild_hosts "$NAME"
+        echo "Disconnected $CONTAINER from $NAME"
+        ;;
+
+    *)
+        echo "Usage: tbox network <create|ls|rm|connect|disconnect> [args]"
+        exit 1
+        ;;
+esac

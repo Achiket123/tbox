@@ -17,18 +17,20 @@ import (
 // State represents a container's lifecycle state
 type State struct {
 	CID       string    `json:"cid"`
+	Name      string    `json:"name,omitempty"` // optional human-readable name
 	ImageHash string    `json:"image_hash"`
 	ProotPID  int       `json:"proot_pid"`
 	StartedAt time.Time `json:"started_at"`
 	Status    string    `json:"status"` // running, exited, stopped
 	ExitCode  int       `json:"exit_code,omitempty"`
+	Detached  bool      `json:"detached,omitempty"` // true when started with -d
 }
 
 // Read loads container state from disk.
 // Returns (State{}, error) — callers MUST check error before using State.
 func Read(cid string) (State, error) {
 	path := statePath(cid)
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //#nosec G304 — path is constructed from validated CID
 	if err != nil {
 		if os.IsNotExist(err) {
 			return State{}, fmt.Errorf("container %s not found", cid)
@@ -53,8 +55,7 @@ func ReadWithHeal(cid string) (State, error) {
 	// Auto-heal: if status is 'running' but PID is dead, mark as crashed
 	if st.Status == "running" && !processExists(st.ProotPID) {
 		st.Status = "exited"
-		st.ExitCode = -1 // crashed / unknown
-		// Best-effort write; ignore error (read-only path may fail)
+		st.ExitCode = -1
 		_ = WithStateLock(cid, func() error {
 			return WriteAtomic(cid, st)
 		})
@@ -70,15 +71,13 @@ func WriteAtomic(cid string, st State) error {
 		return fmt.Errorf("create state dir: %w", err)
 	}
 
-	// Write to temp file first
 	tmp, err := os.CreateTemp(dir, "state-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp: %w", err)
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath) // cleanup on failure
+	defer os.Remove(tmpPath)
 
-	// Marshal with indentation for readability
 	data, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal state: %w", err)
@@ -87,14 +86,13 @@ func WriteAtomic(cid string, st State) error {
 	if _, err := tmp.Write(data); err != nil {
 		return fmt.Errorf("write temp: %w", err)
 	}
-	if err := tmp.Sync(); err != nil { // fsync!
+	if err := tmp.Sync(); err != nil {
 		return fmt.Errorf("fsync temp: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp: %w", err)
 	}
 
-	// Atomic rename — POSIX guarantees this is atomic
 	return os.Rename(tmpPath, statePath(cid))
 }
 
@@ -114,7 +112,7 @@ func GenerateCID(imagePath string) (string, error) {
 
 // HashFile computes SHA256 of a file (for content-addressable caching)
 func HashFile(path string) (string, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //#nosec G304 — caller controls path, validated upstream
 	if err != nil {
 		return "", err
 	}
@@ -127,14 +125,11 @@ func HashFile(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// statePath returns the path to a container's state.json
 func statePath(cid string) string {
 	return filepath.Join(containerDir(cid), "state.json")
 }
 
-// containerDir returns the directory for a container's state files
 func containerDir(cid string) string {
-	// Inline AppPrivateDir to avoid import cycle with termux package
 	home := os.Getenv("HOME")
 	if home == "" {
 		home = "/data/data/com.termux/files/home"
@@ -142,7 +137,8 @@ func containerDir(cid string) string {
 	return filepath.Join(home, ".tbox", "containers", cid)
 }
 
-// processExists checks if a PID is currently alive (duplicated to avoid cycle)
+// processExists checks if a PID is currently alive.
+// Kept here to avoid an import cycle with the engine package.
 func processExists(pid int) bool {
 	return syscall.Kill(pid, 0) == nil
 }

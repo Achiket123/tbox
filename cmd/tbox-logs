@@ -1,0 +1,17 @@
+#!/bin/sh
+TBOX_HOME="${TBOX_HOME:-$HOME/.tbox}"
+
+FOLLOW=0
+[ "${1:-}" = "-f" ] && FOLLOW=1 && shift
+
+TARGET="${1:-}"
+[ -z "$TARGET" ] && echo "Usage: tbox logs [-f] <name>" && exit 1
+
+LOGFILE="$TBOX_HOME/containers/$TARGET/log"
+[ -f "$LOGFILE" ] || { echo "No logs found for $TARGET"; exit 1; }
+
+if [ "$FOLLOW" = "1" ]; then
+    tail -f "$LOGFILE"
+else
+    cat "$LOGFILE"
+fi

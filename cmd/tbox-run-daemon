@@ -1,0 +1,18 @@
+#!/bin/sh
+# Internal helper — runs a container fully detached
+# Called by tbox-run when -d flag is set
+# Usage: tbox-run-daemon <cdir> <proot_args> <loader> <busybox> <logfile>
+# We re-exec ourselves under nohup in a subshell so the parent can exit cleanly
+
+CDIR="$1"
+LOGFILE="$2"
+LOADER="$3"
+BUSYBOX="$4"
+PROOT_ARGS="$5"
+
+nohup sh -c "eval \"proot $PROOT_ARGS $LOADER $BUSYBOX sh /.tbox-init.sh\"" \
+    >> "$LOGFILE" 2>&1 &
+
+echo $! > "$CDIR/pid"
+echo "running" > "$CDIR/status"
+echo $!

@@ -1,0 +1,48 @@
+#!/bin/sh
+# tbox commit <container> <name:tag>
+set -e
+
+TBOX_HOME="${TBOX_HOME:-$HOME/.tbox}"
+TBOX_BIN="$(cd "$(dirname "$0")/.." && pwd)"
+CONTAINERS_DIR="$TBOX_HOME/containers"
+IMAGES_DIR="$TBOX_HOME/images"
+
+CONTAINER="${1:-}"
+TAG="${2:-}"
+
+[ -z "$CONTAINER" ] && echo "Usage: tbox commit <container> <name:tag>" && exit 1
+[ -z "$TAG" ]       && echo "Usage: tbox commit <container> <name:tag>" && exit 1
+
+CDIR="$CONTAINERS_DIR/$CONTAINER"
+[ -d "$CDIR/rootfs" ] || { echo "Container not found: $CONTAINER"; exit 1; }
+
+IMAGE_NAME="${TAG%%:*}"
+IMAGE_TAG="${TAG##*:}"
+[ "$IMAGE_TAG" = "$IMAGE_NAME" ] && IMAGE_TAG="latest"
+IMAGE_DIR="$IMAGES_DIR/$IMAGE_NAME"
+
+echo "Committing $CONTAINER -> $TAG ..."
+
+# Remove any tbox internal scripts from the snapshot
+rm -f "$CDIR/rootfs/.tbox-init.sh"
+rm -f "$CDIR/rootfs/.tbox-exec.sh"
+rm -f "$CDIR/rootfs/.tbox-build-run.sh"
+
+# Copy container rootfs -> image
+rm -rf "$IMAGE_DIR"
+cp -a "$CDIR/rootfs/." "$IMAGE_DIR/"
+
+# Write metadata
+echo "$IMAGE_NAME"  > "$IMAGE_DIR/.name"
+echo "$IMAGE_TAG"   > "$IMAGE_DIR/.tag"
+date +%s            > "$IMAGE_DIR/.created"
+du -sh "$IMAGE_DIR" | cut -f1 > "$IMAGE_DIR/.size"
+
+# Carry over config if it exists
+if [ -f "$CDIR/rootfs/etc/tbox/config.json" ]; then
+    echo "  Preserved /etc/tbox/config.json"
+fi
+
+echo "Successfully committed $CONTAINER as $TAG"
+echo ""
+"$TBOX_BIN/cmd/tbox-images" 2>/dev/null || true

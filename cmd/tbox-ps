@@ -1,0 +1,14 @@
+#!/bin/sh
+TBOX_HOME="${TBOX_HOME:-$HOME/.tbox}"
+CONTAINERS_DIR="$TBOX_HOME/containers"
+
+printf "%-14s %-20s %-12s %-10s %s\n" "ID" "NAME" "IMAGE" "STATUS" "PORTS"
+for cdir in "$CONTAINERS_DIR"/*/; do
+    [ -d "$cdir" ] || continue
+    id=$(cat "$cdir/id" 2>/dev/null | cut -c1-12)
+    name=$(cat "$cdir/name" 2>/dev/null || basename "$cdir")
+    image=$(cat "$cdir/image" 2>/dev/null || "?")
+    status=$(cat "$cdir/status" 2>/dev/null || "?")
+    ports=$(cat "$cdir/ports" 2>/dev/null | tr ' ' ',')
+    printf "%-14s %-20s %-12s %-10s %s\n" "$id" "$name" "$image" "$status" "$ports"
+done

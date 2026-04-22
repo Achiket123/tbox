@@ -1,0 +1,54 @@
+#!/bin/sh
+# tbox exec <container> -- <cmd>
+set -e
+
+TBOX_HOME="${TBOX_HOME:-$HOME/.tbox}"
+CONTAINERS_DIR="$TBOX_HOME/containers"
+
+TARGET="${1:-}"
+[ -z "$TARGET" ] && echo "Usage: tbox exec <name> -- <cmd>" && exit 1
+shift
+[ "${1:-}" = "--" ] && shift
+
+CDIR="$CONTAINERS_DIR/$TARGET"
+[ -d "$CDIR" ] || { echo "Container not found: $TARGET"; exit 1; }
+
+# Detect loader
+LOADER=""
+for candidate in \
+    lib/ld-musl-aarch64.so.1 \
+    lib/ld-musl-armhf.so.1 \
+    lib64/ld-linux-aarch64.so.1 \
+    lib/ld-linux-aarch64.so.1 \
+    lib/aarch64-linux-gnu/ld-linux-aarch64.so.1; do
+    [ -f "$CDIR/rootfs/$candidate" ] && LOADER="/$candidate" && break
+done
+
+BUSYBOX_BIN=""
+for p in bin/busybox usr/bin/busybox; do
+    [ -f "$CDIR/rootfs/$p" ] && BUSYBOX_BIN="/$p" && break
+done
+
+USER_CMD="$*"
+[ -z "$USER_CMD" ] && USER_CMD="/bin/sh"
+
+# Write exec script
+EXECSCRIPT="$CDIR/rootfs/.tbox-exec.sh"
+{
+    printf '#!/bin/busybox sh\n'
+    printf 'export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n'
+    # Strip /bin/sh -c wrapper if present
+    CLEAN_CMD=$(printf '%s' "$USER_CMD" | sed 's|^/bin/sh -c ||; s|^/bin/sh$||')
+    printf '%s\n' "$CLEAN_CMD"
+} > "$EXECSCRIPT"
+chmod 755 "$EXECSCRIPT"
+
+PROOT_ARGS="--link2symlink"
+PROOT_ARGS="$PROOT_ARGS --rootfs=$CDIR/rootfs"
+PROOT_ARGS="$PROOT_ARGS --root-id"
+PROOT_ARGS="$PROOT_ARGS --bind=/dev"
+PROOT_ARGS="$PROOT_ARGS --bind=/proc"
+PROOT_ARGS="$PROOT_ARGS --bind=/sys"
+PROOT_ARGS="$PROOT_ARGS --pwd=/"
+
+eval "proot $PROOT_ARGS $LOADER $BUSYBOX_BIN sh /.tbox-exec.sh"

@@ -1,0 +1,220 @@
+#!/bin/sh
+# tbox build [-t name:tag] <context_dir>
+set -e
+
+TBOX_HOME="${TBOX_HOME:-$HOME/.tbox}"
+IMAGES_DIR="$TBOX_HOME/images"
+TBOX_BIN="$(cd "$(dirname "$0")/.." && pwd)"
+
+TAG="tbox-build:latest"
+CONTEXT_DIR="."
+
+while true; do
+    case "${1:-}" in
+        -t) TAG="$2"; shift 2 ;;
+        -t*) TAG="${1#-t}"; shift ;;
+        --) shift; break ;;
+        -*) echo "Unknown option: $1"; exit 1 ;;
+        *) break ;;
+    esac
+done
+
+[ -n "${1:-}" ] && CONTEXT_DIR="$1"
+CONTEXT_DIR="$(cd "$CONTEXT_DIR" && pwd)"
+TBOXFILE="$CONTEXT_DIR/Tboxfile"
+
+[ -f "$TBOXFILE" ] || {
+    echo "ERROR: No Tboxfile found in $CONTEXT_DIR"
+    echo "Create a Tboxfile with FROM, RUN, COPY, ENV, EXPOSE, CMD directives."
+    exit 1
+}
+
+IMAGE_NAME="${TAG%%:*}"
+IMAGE_TAG="${TAG##*:}"
+[ "$IMAGE_TAG" = "$IMAGE_NAME" ] && IMAGE_TAG="latest"
+BUILD_DIR="$TBOX_HOME/tmp/build-$$"
+IMAGE_DIR="$IMAGES_DIR/$IMAGE_NAME"
+
+echo "Building $TAG from $TBOXFILE ..."
+echo "Context: $CONTEXT_DIR"
+echo ""
+
+# ── Parse and execute Tboxfile ────────────────────────────────────────────
+FROM_IMAGE=""
+CMD_DEFAULT=""
+EXPOSE_PORT=""
+WORKDIR="/"
+STEP=0
+
+# We build into a staging rootfs, then move to images/
+STAGE_DIR="$BUILD_DIR/rootfs"
+mkdir -p "$STAGE_DIR"
+
+run_in_stage() {
+    # Run a command inside the staging rootfs using tbox-exec logic inline
+    CMD="$1"
+    LOADER=""
+    for candidate in \
+        lib/ld-musl-aarch64.so.1 \
+        lib/ld-musl-armhf.so.1 \
+        lib64/ld-linux-aarch64.so.1 \
+        lib/ld-linux-aarch64.so.1 \
+        lib/aarch64-linux-gnu/ld-linux-aarch64.so.1; do
+        [ -f "$STAGE_DIR/$candidate" ] && LOADER="/$candidate" && break
+    done
+
+    BUSYBOX_BIN=""
+    for p in bin/busybox usr/bin/busybox; do
+        [ -f "$STAGE_DIR/$p" ] && BUSYBOX_BIN="/$p" && break
+    done
+
+    EXECSCRIPT="$STAGE_DIR/.tbox-build-run.sh"
+    {
+        printf '#!/bin/busybox sh\n'
+        printf 'export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n'
+        printf 'cd %s\n' "$WORKDIR"
+        printf '%s\n' "$CMD"
+    } > "$EXECSCRIPT"
+    chmod 755 "$EXECSCRIPT"
+
+    proot \
+        --link2symlink \
+        --rootfs="$STAGE_DIR" \
+        --root-id \
+        --bind=/dev \
+        --bind=/proc \
+        --bind=/sys \
+        --pwd="$WORKDIR" \
+        $LOADER $BUSYBOX_BIN sh /.tbox-build-run.sh
+}
+
+# ── Read Tboxfile line by line ─────────────────────────────────────────────
+while IFS= read -r line || [ -n "$line" ]; do
+    # Skip comments and blank lines
+    case "$line" in
+        '#'*|'') continue ;;
+    esac
+
+    directive="${line%% *}"
+    rest="${line#* }"
+
+    STEP=$((STEP + 1))
+    echo "Step $STEP: $line"
+
+    case "$directive" in
+        FROM)
+            FROM_IMAGE="$rest"
+            FROM_NAME="${FROM_IMAGE%%:*}"
+            FROM_DIR="$IMAGES_DIR/$FROM_NAME"
+            # Pull if not present
+            if [ ! -d "$FROM_DIR" ]; then
+                echo "  Pulling $FROM_IMAGE ..."
+                "$TBOX_BIN/tbox" pull "$FROM_IMAGE"
+            fi
+            echo "  Copying base image $FROM_NAME ..."
+            cp -a "$FROM_DIR/." "$STAGE_DIR/"
+            # Ensure required dirs
+            mkdir -p "$STAGE_DIR/tmp" "$STAGE_DIR/root" "$STAGE_DIR/etc"
+            chmod 1777 "$STAGE_DIR/tmp"
+            printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\n' \
+                > "$STAGE_DIR/etc/resolv.conf"
+            # Fix busybox applet wrappers
+            BUSYBOX_BIN_HOST=""
+            for p in bin/busybox usr/bin/busybox; do
+                [ -f "$STAGE_DIR/$p" ] && BUSYBOX_BIN_HOST="/$p" && break
+            done
+            if [ -n "$BUSYBOX_BIN_HOST" ]; then
+                for link in "$STAGE_DIR/bin/"*; do
+                    applet=$(basename "$link")
+                    [ "$applet" = "busybox" ] && continue
+                    target=$(readlink "$link" 2>/dev/null || true)
+                    case "$target" in
+                        *busybox*)
+                            rm -f "$link"
+                            printf '#!/bin/busybox sh\nexec %s %s "$@"\n' \
+                                "$BUSYBOX_BIN_HOST" "$applet" > "$link"
+                            chmod 755 "$link"
+                            ;;
+                    esac
+                done
+            fi
+            echo "  Base image ready."
+            ;;
+
+        RUN)
+            echo "  Running: $rest"
+            run_in_stage "$rest"
+            ;;
+
+        COPY)
+            SRC="${rest%% *}"
+            DEST="${rest##* }"
+            SRC_PATH="$CONTEXT_DIR/$SRC"
+            DEST_PATH="$STAGE_DIR/$DEST"
+            echo "  Copying $SRC -> $DEST"
+            mkdir -p "$(dirname "$DEST_PATH")"
+            cp -a "$SRC_PATH" "$DEST_PATH"
+            ;;
+
+        WORKDIR)
+            WORKDIR="$rest"
+            mkdir -p "$STAGE_DIR/$WORKDIR"
+            echo "  Workdir: $WORKDIR"
+            ;;
+
+        ENV)
+            # Store as a file that gets sourced at runtime
+            mkdir -p "$STAGE_DIR/etc/tbox"
+            echo "export $rest" >> "$STAGE_DIR/etc/tbox/env"
+            echo "  Env: $rest"
+            ;;
+
+        EXPOSE)
+            EXPOSE_PORT="$rest"
+            echo "  Expose: $rest"
+            ;;
+
+        CMD)
+            CMD_DEFAULT="$rest"
+            echo "  CMD: $rest"
+            ;;
+
+        *)
+            echo "  WARNING: Unknown directive '$directive' — skipping"
+            ;;
+    esac
+done < "$TBOXFILE"
+
+# ── Write image metadata ───────────────────────────────────────────────────
+echo ""
+echo "Finalizing image $TAG ..."
+
+# Write tbox.json with CMD and EXPOSE
+mkdir -p "$STAGE_DIR/etc/tbox"
+cat > "$STAGE_DIR/etc/tbox/config.json" << JSONEOF
+{
+  "image": "$IMAGE_NAME",
+  "tag": "$IMAGE_TAG",
+  "cmd": "$CMD_DEFAULT",
+  "expose": "$EXPOSE_PORT",
+  "workdir": "$WORKDIR"
+}
+JSONEOF
+
+# Move staging rootfs to images dir
+rm -rf "$IMAGE_DIR"
+mkdir -p "$(dirname "$IMAGE_DIR")"
+mv "$STAGE_DIR" "$IMAGE_DIR"
+
+# Write image metadata
+echo "$IMAGE_NAME"  > "$IMAGE_DIR/.name"
+echo "$IMAGE_TAG"   > "$IMAGE_DIR/.tag"
+date +%s            > "$IMAGE_DIR/.created"
+du -sh "$IMAGE_DIR" | cut -f1 > "$IMAGE_DIR/.size"
+
+# Cleanup
+rm -rf "$BUILD_DIR"
+
+echo ""
+echo "Successfully built $TAG"
+echo "  Run: tbox run -p HOST:$EXPOSE_PORT $IMAGE_NAME -- $CMD_DEFAULT"

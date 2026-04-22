@@ -1,0 +1,8 @@
+#!/bin/sh
+TBOX_HOME="${TBOX_HOME:-$HOME/.tbox}"
+TARGET="${1:-}"
+[ -z "$TARGET" ] && echo "Usage: tbox rm <name|id>" && exit 1
+CDIR="$TBOX_HOME/containers/$TARGET"
+[ -d "$CDIR" ] || { echo "Container not found: $TARGET"; exit 1; }
+rm -rf "$CDIR"
+echo "Removed $TARGET"

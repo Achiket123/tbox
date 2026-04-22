@@ -1,0 +1,73 @@
+#!/bin/sh
+# tbox pull <image>
+set -e
+
+TBOX_HOME="${TBOX_HOME:-$HOME/.tbox}"
+IMAGES_DIR="$TBOX_HOME/images"
+
+IMAGE="${1:-}"
+[ -z "$IMAGE" ] && echo "Usage: tbox pull <image>" && exit 1
+
+# Strip tag for now, treat alpine:3.19 and alpine as same
+NAME="${IMAGE%%:*}"
+TAG="${IMAGE##*:}"
+[ "$TAG" = "$NAME" ] && TAG="latest"
+
+IMAGE_DIR="$IMAGES_DIR/$NAME"
+
+# Known image sources
+case "$NAME" in
+    alpine)
+        URL="https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/aarch64/alpine-minirootfs-3.19.1-aarch64.tar.gz"
+        ;;
+    debian)
+        URL="https://github.com/debuerreotype/docker-debian-artifacts/raw/dist-arm64v8/bookworm/slim/rootfs.tar.xz"
+        ;;
+    ubuntu)
+        URL="https://cdimage.ubuntu.com/ubuntu-base/releases/22.04/release/ubuntu-base-22.04.1-base-arm64.tar.gz"
+        ;;
+    busybox)
+        # Use the tgz we already built
+        TBOX_BIN="$(cd "$(dirname "$0")/.." && pwd)"
+        if [ -f "$TBOX_BIN/examples/busybox-static.tgz" ]; then
+            mkdir -p "$IMAGE_DIR"
+            tar -xzf "$TBOX_BIN/examples/busybox-static.tgz" -C "$IMAGE_DIR"
+            echo "$NAME" > "$IMAGE_DIR/.name"
+            echo "$TAG"  > "$IMAGE_DIR/.tag"
+            date +%s     > "$IMAGE_DIR/.created"
+            du -sh "$IMAGE_DIR" | cut -f1 > "$IMAGE_DIR/.size"
+            echo "Loaded $NAME from local build."
+            exit 0
+        else
+            echo "ERROR: Build busybox first: sh build-busybox-static.sh"
+            exit 1
+        fi
+        ;;
+    *)
+        echo "Unknown image: $NAME"
+        echo "Available: alpine, debian, ubuntu, busybox"
+        exit 1
+        ;;
+esac
+
+echo "Pulling $NAME:$TAG ..."
+echo "  from: $URL"
+
+mkdir -p "$IMAGE_DIR"
+TMPFILE="$TBOX_HOME/tmp/pull-$NAME.tar.gz"
+
+curl -L --progress-bar "$URL" -o "$TMPFILE"
+
+echo "Extracting..."
+tar -xf "$TMPFILE" -C "$IMAGE_DIR" 2>/dev/null || \
+    tar -xzf "$TMPFILE" -C "$IMAGE_DIR"
+
+rm -f "$TMPFILE"
+
+# Write metadata
+echo "$NAME" > "$IMAGE_DIR/.name"
+echo "$TAG"   > "$IMAGE_DIR/.tag"
+date +%s      > "$IMAGE_DIR/.created"
+du -sh "$IMAGE_DIR" | cut -f1 > "$IMAGE_DIR/.size"
+
+echo "Done. Image '$NAME:$TAG' stored at $IMAGE_DIR"

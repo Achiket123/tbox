@@ -14,44 +14,41 @@ import (
 )
 
 // PrepareOverlay creates a CoW overlay of the image rootfs for cid.
-// Uses hardlinks if supported; falls back to tar-stream copy (fast & Android-safe).
+// Uses hardlinks if supported; falls back to tar-stream copy.
 // Returns path to the overlay root (used as proot -r argument).
 func PrepareOverlay(imageHash, cid string, cfg Config) (string, error) {
 	src := imagePath(imageHash)
 	dst := overlayPath(cid)
 
-	// Create container directory structure
-	if err := os.MkdirAll(dst, 0755); err != nil {
+	if err := os.MkdirAll(dst, 0755); err != nil { //nolint:gosec // G301
 		return "", fmt.Errorf("create overlay dir: %w", err)
 	}
 
-	// Create /tbox virtual API directory (real directory, not bind mount)
 	tboxDir := filepath.Join(dst, "tbox")
-	if err := os.MkdirAll(tboxDir, 0755); err != nil {
+	if err := os.MkdirAll(tboxDir, 0755); err != nil { //nolint:gosec // G301
 		return "", fmt.Errorf("create /tbox dir: %w", err)
 	}
 
-	// Populate /tbox with initial structure
-	for _, sub := range []string{"config", "secrets", "ipc", "health"} {
-		if err := os.MkdirAll(filepath.Join(tboxDir, sub), 0755); err != nil {
+	for _, sub := range []string{"config", "ipc", "health"} {
+		if err := os.MkdirAll(filepath.Join(tboxDir, sub), 0755); err != nil { //nolint:gosec // G301
 			return "", fmt.Errorf("create /tbox/%s: %w", sub, err)
 		}
 	}
+	// secrets gets tighter permissions
+	if err := os.MkdirAll(filepath.Join(tboxDir, "secrets"), 0700); err != nil {
+		return "", fmt.Errorf("create /tbox/secrets: %w", err)
+	}
 
-	// CoW strategy: hardlink tree if filesystem supports it
 	if termux.SupportsHardlinks(dst) {
 		if err := hardlinkTree(src, dst); err == nil {
 			return dst, nil
 		}
-		// If hardlinks fail, fall through to tar copy
-		fmt.Fprintln(os.Stderr, "Warning: hardlinks failed; using tar-stream copy (fast)")
+		fmt.Fprintln(os.Stderr, "Warning: hardlinks failed; using tar-stream copy")
 	}
 
-	// Fallback: tar-stream copy (fast, avoids per-file overhead of cp)
 	return dst, copyTree(src, dst)
 }
 
-// hardlinkTree creates a hardlinked copy of src at dst (CoW base)
 func hardlinkTree(src, dst string) error {
 	if err := validatePath(src); err != nil {
 		return fmt.Errorf("invalid src: %w", err)
@@ -59,15 +56,12 @@ func hardlinkTree(src, dst string) error {
 	if err := validatePath(dst); err != nil {
 		return fmt.Errorf("invalid dst: %w", err)
 	}
-	// cp -al: archive mode + hardlinks. Takes ~0.1s for 5GB.
-	cmd := exec.Command("cp", "-al", src+"/.", dst)
+	cmd := exec.Command("cp", "-al", src+"/.", dst) //#nosec G204 — paths validated above
 	cmd.Stdout = io.Discard
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
-// copyTree creates a full recursive copy of src at dst using tar stream.
-// This is significantly faster than cp -rP on Android and avoids hardlink restrictions.
 func copyTree(src, dst string) error {
 	if err := validatePath(src); err != nil {
 		return fmt.Errorf("invalid src: %w", err)
@@ -75,15 +69,15 @@ func copyTree(src, dst string) error {
 	if err := validatePath(dst); err != nil {
 		return fmt.Errorf("invalid dst: %w", err)
 	}
-	// tar -C src -cf - . | tar -C dst -xf -
-	// Streams files directly; avoids per-file stat overhead of cp
-	cmd := exec.Command("sh", "-c", fmt.Sprintf("tar -C '%s' -cf - . | tar -C '%s' -xf -", src, dst))
+	// tar stream avoids per-file stat overhead of cp -rP and works on all Android FSes
+	cmd := exec.Command("sh", "-c",
+		"tar -C '\"$src\"' -cf - . | tar -C '\"$dst\"' -xf -") //#nosec G204
+	cmd.Env = append(os.Environ(), "src="+src, "dst="+dst)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
-// validatePath ensures path is under Termux app-private dir
 func validatePath(p string) error {
 	clean := filepath.Clean(p)
 	abs, err := filepath.Abs(clean)
@@ -97,24 +91,19 @@ func validatePath(p string) error {
 	return nil
 }
 
-// imagePath returns the cached image rootfs path
+// prootLink2SymlinkEnabled checks if proot --link2symlink works on this device.
+// Called from run.go; defined here to keep overlay-related helpers together.
+func prootLink2SymlinkEnabled() bool {
+	cmd := exec.Command("proot", "--link2symlink", "/data/data/com.termux/files/usr/bin/true")
+	cmd.Env = android.GetProotEnv(os.Environ())
+	err := cmd.Run()
+	return err == nil
+}
+
 func imagePath(imageHash string) string {
 	return filepath.Join(termux.AppPrivateDir(), "images", imageHash, "rootfs")
 }
 
-// overlayPath returns the container overlay path
 func overlayPath(cid string) string {
 	return filepath.Join(termux.AppPrivateDir(), "containers", cid, "overlay")
-}
-func prootLink2SymlinkEnabled() bool {
-	// Quick test: try proot with --link2symlink on a dummy command.
-	// We MUST unset LD_PRELOAD here too, otherwise the check itself may fail!
-	cmd := exec.Command("proot", "--link2symlink", "/data/data/com.termux/files/usr/bin/true")
-	cmd.Env = android.GetProotEnv(os.Environ())
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[DEBUG] prootLink2SymlinkEnabled failed! error: %v, output: %s\n", err, string(out))
-		return false
-	}
-	return true
 }

@@ -2,31 +2,44 @@
 package state
 
 import (
-	"context"
 	"fmt"
+	"os"
 	"path/filepath"
+	"syscall"
 	"time"
-
-	"github.com/gofrs/flock"
 )
 
-// WithStateLock acquires flock on <cid>/state.lock, runs fn, releases.
-// Times out after 5 seconds; returns error if lock not acquired.
+// WithStateLock acquires an exclusive BSD flock on <cid>/state.lock via
+// syscall.Flock, runs fn, then releases. Polls every 100ms up to 5 seconds.
+// Using syscall.Flock directly removes the github.com/gofrs/flock dependency.
 func WithStateLock(cid string, fn func() error) error {
-	lockPath := filepath.Join(containerDir(cid), "state.lock")
-	fileLock := flock.New(lockPath)
+	dir := containerDir(cid)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("create container dir: %w", err)
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	locked, err := fileLock.TryLockContext(ctx, 100*time.Millisecond)
+	lockPath := filepath.Join(dir, "state.lock")
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
-		return fmt.Errorf("lock error: %w", err)
+		return fmt.Errorf("open lock file: %w", err)
 	}
-	if !locked {
-		return fmt.Errorf("could not acquire state lock for %s (timeout)", cid)
+	defer f.Close()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if err != syscall.EWOULDBLOCK {
+			return fmt.Errorf("flock: %w", err)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("could not acquire state lock for %s (timeout)", cid)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	defer fileLock.Unlock()
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:errcheck
 
 	return fn()
 }

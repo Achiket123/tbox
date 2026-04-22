@@ -1,0 +1,191 @@
+#!/bin/sh
+set -e
+
+TBOX_HOME="${TBOX_HOME:-$HOME/.tbox}"
+IMAGES_DIR="$TBOX_HOME/images"
+CONTAINERS_DIR="$TBOX_HOME/containers"
+TBOX_BIN="$(cd "$(dirname "$0")/.." && pwd)"
+
+PORT_MAPS=""
+ENV_VARS=""
+VOLUMES=""
+CONTAINER_NAME=""
+DETACH=0
+NETWORK=""
+
+while true; do
+    case "${1:-}" in
+        -d)      DETACH=1; shift ;;
+        -p)      PORT_MAPS="$PORT_MAPS $2"; shift 2 ;;
+        -p*)     PORT_MAPS="$PORT_MAPS ${1#-p}"; shift ;;
+        -e)      ENV_VARS="$ENV_VARS $2"; shift 2 ;;
+        -e*)     ENV_VARS="$ENV_VARS ${1#-e}"; shift ;;
+        -v)      VOLUMES="$VOLUMES $2"; shift 2 ;;
+        -v*)     VOLUMES="$VOLUMES ${1#-v}"; shift ;;
+        --name)  CONTAINER_NAME="$2"; shift 2 ;;
+        --network) NETWORK="$2"; shift 2 ;;
+        --)      shift; break ;;
+        -*)      echo "Unknown option: $1"; exit 1 ;;
+        *)       break ;;
+    esac
+done
+
+IMAGE="${1:-}"
+[ -z "$IMAGE" ] && echo "Usage: tbox run [opts] <image> [-- <cmd>]" && exit 1
+shift
+[ "${1:-}" = "--" ] && shift
+
+USER_CMD="$*"
+
+IMAGE_NAME="${IMAGE%%:*}"
+IMAGE_DIR="$IMAGES_DIR/$IMAGE_NAME"
+
+if [ ! -d "$IMAGE_DIR" ] && [ -f "$IMAGE" ]; then
+    EXTRACT_DIR="$TBOX_HOME/tmp/run-$$"
+    mkdir -p "$EXTRACT_DIR"
+    tar -xzf "$IMAGE" -C "$EXTRACT_DIR"
+    IMAGE_DIR="$EXTRACT_DIR"
+    CLEANUP_IMAGE=1
+fi
+
+[ -d "$IMAGE_DIR" ] || {
+    echo "Image not found: $IMAGE_NAME  (run: tbox pull $IMAGE_NAME)"
+    exit 1
+}
+
+CID="$(head -c6 /dev/urandom | hexdump -e '1/1 "%02x"' | tr -d ' \n')"
+[ -n "$CONTAINER_NAME" ] || CONTAINER_NAME="tbox-$CID"
+CDIR="$CONTAINERS_DIR/$CONTAINER_NAME"
+mkdir -p "$CDIR/rootfs"
+
+echo "Creating container $CONTAINER_NAME from $IMAGE_NAME..."
+cp -a "$IMAGE_DIR/." "$CDIR/rootfs/"
+
+# Init rootfs
+mkdir -p "$CDIR/rootfs/tmp" "$CDIR/rootfs/root" \
+         "$CDIR/rootfs/var/cache/apk" "$CDIR/rootfs/etc"
+chmod 1777 "$CDIR/rootfs/tmp"
+printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\n' \
+    > "$CDIR/rootfs/etc/resolv.conf"
+
+# Fix busybox applet wrappers
+BUSYBOX_BIN=""
+for p in bin/busybox usr/bin/busybox; do
+    [ -f "$CDIR/rootfs/$p" ] && BUSYBOX_BIN="/$p" && break
+done
+
+if [ -n "$BUSYBOX_BIN" ]; then
+    for link in "$CDIR/rootfs/bin/"*; do
+        applet=$(basename "$link")
+        [ "$applet" = "busybox" ] && continue
+        target=$(readlink "$link" 2>/dev/null || true)
+        case "$target" in
+            *busybox*)
+                rm -f "$link"
+                printf '#!/bin/busybox sh\nexec %s %s "$@"\n' \
+                    "$BUSYBOX_BIN" "$applet" > "$link"
+                chmod 755 "$link"
+                ;;
+        esac
+    done
+fi
+
+# Metadata
+echo "$CID"            > "$CDIR/id"
+echo "$IMAGE_NAME"     > "$CDIR/image"
+echo "$CONTAINER_NAME" > "$CDIR/name"
+echo "created"         > "$CDIR/status"
+date +%s               > "$CDIR/created"
+echo "$PORT_MAPS"      > "$CDIR/ports"
+touch                    "$CDIR/socat_pids"
+touch                    "$CDIR/pid"
+LOGFILE="$CDIR/log"
+
+# Detect ELF loader
+LOADER=""
+for candidate in \
+    lib/ld-musl-aarch64.so.1 \
+    lib/ld-musl-armhf.so.1 \
+    lib64/ld-linux-aarch64.so.1 \
+    lib/ld-linux-aarch64.so.1 \
+    lib/aarch64-linux-gnu/ld-linux-aarch64.so.1; do
+    [ -f "$CDIR/rootfs/$candidate" ] && LOADER="/$candidate" && break
+done
+
+# Port forwards via socat
+for pm in $PORT_MAPS; do
+    host_port="${pm%%:*}"
+    cont_port="${pm##*:}"
+    echo "  Forwarding 0.0.0.0:$host_port -> container:$cont_port"
+    socat TCP4-LISTEN:$host_port,fork,reuseaddr \
+          TCP4:127.0.0.1:$cont_port >> "$LOGFILE" 2>&1 &
+    echo $! >> "$CDIR/socat_pids"
+done
+
+# Connect to network if requested
+if [ -n "$NETWORK" ]; then
+    # Get first exposed container port from PORT_MAPS or default 80
+    NET_PORT=$(printf '%s' "$PORT_MAPS" | grep -o '[0-9]*$' | head -1)
+    [ -z "$NET_PORT" ] && NET_PORT="80"
+    . "$(dirname "$0")/tbox-netlib.sh"
+    echo "  Joining network: $NETWORK (port $NET_PORT)"
+    net_connect "$NETWORK" "$CONTAINER_NAME" "$NET_PORT"
+fi
+
+echo "Container: $CONTAINER_NAME ($CID)"
+[ -n "$PORT_MAPS" ] && echo "Ports:     $PORT_MAPS"
+[ -n "$LOADER"    ] && echo "Loader:    $LOADER"
+echo "---"
+
+# Write launcher script
+LAUNCHER="$CDIR/rootfs/.tbox-init.sh"
+{
+    printf '#!/bin/busybox sh\n'
+    for ev in $ENV_VARS; do
+        printf 'export %s\n' "$ev"
+    done
+    printf 'export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n'
+    if [ -n "$USER_CMD" ]; then
+        CLEAN_CMD=$(printf '%s' "$USER_CMD" | sed 's|^/bin/sh -c ||; s|^/bin/sh$||')
+        printf '%s\n' "$CLEAN_CMD"
+    else
+        printf 'exec %s sh\n' "$BUSYBOX_BIN"
+    fi
+} > "$LAUNCHER"
+chmod 755 "$LAUNCHER"
+
+# Build proot args
+PROOT_ARGS="--link2symlink"
+PROOT_ARGS="$PROOT_ARGS --rootfs=$CDIR/rootfs"
+PROOT_ARGS="$PROOT_ARGS --root-id"
+PROOT_ARGS="$PROOT_ARGS --bind=/dev"
+PROOT_ARGS="$PROOT_ARGS --bind=/proc"
+PROOT_ARGS="$PROOT_ARGS --bind=/sys"
+PROOT_ARGS="$PROOT_ARGS --pwd=/"
+for vol in $VOLUMES; do
+    PROOT_ARGS="$PROOT_ARGS --bind=${vol%%:*}:${vol##*:}"
+done
+
+if [ "$DETACH" = "1" ]; then
+    # ── Detached mode ─────────────────────────────────────────────────────
+    # Run under nohup, redirect all output to logfile, return immediately
+    nohup sh -c "eval \"proot $PROOT_ARGS $LOADER $BUSYBOX_BIN sh /.tbox-init.sh\"" \
+        >> "$LOGFILE" 2>&1 &
+    CONT_PID=$!
+    echo $CONT_PID > "$CDIR/pid"
+    echo "running"  > "$CDIR/status"
+    echo "Started $CONTAINER_NAME (pid $CONT_PID)"
+    echo "Logs:  tbox logs $CONTAINER_NAME"
+    echo "Follow: tbox logs -f $CONTAINER_NAME"
+    echo "Stop:  tbox stop $CONTAINER_NAME"
+else
+    # ── Foreground mode ───────────────────────────────────────────────────
+    echo "running" > "$CDIR/status"
+    eval "proot $PROOT_ARGS $LOADER $BUSYBOX_BIN sh /.tbox-init.sh" \
+        2>&1 | tee -a "$LOGFILE"
+    EXIT_CODE=$?
+    while read pid; do kill "$pid" 2>/dev/null || true; done < "$CDIR/socat_pids"
+    [ "${CLEANUP_IMAGE:-0}" = "1" ] && rm -rf "$EXTRACT_DIR"
+    echo "stopped" > "$CDIR/status"
+    exit $EXIT_CODE
+fi

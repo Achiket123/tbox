@@ -1,2 +1,4 @@
 bin/
 etc/
+.context_cache/
+code_context.txt

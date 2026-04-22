@@ -1,0 +1,15 @@
+#!/bin/sh
+TBOX_HOME="${TBOX_HOME:-$HOME/.tbox}"
+IMAGES_DIR="$TBOX_HOME/images"
+
+printf "%-20s %-10s %-12s %s\n" "IMAGE" "TAG" "SIZE" "CREATED"
+for dir in "$IMAGES_DIR"/*/; do
+    [ -d "$dir" ] || continue
+    [ -f "$dir/.name" ] || continue   # skip dirs without metadata
+    name=$(cat "$dir/.name")
+    tag=$(cat  "$dir/.tag"  2>/dev/null); [ -z "$tag"  ] && tag="latest"
+    size=$(cat "$dir/.size" 2>/dev/null); [ -z "$size" ] && size="?"
+    ts=$(cat   "$dir/.created" 2>/dev/null); [ -z "$ts" ] && ts="0"
+    created=$(date -d "@$ts" "+%Y-%m-%d %H:%M" 2>/dev/null || echo "unknown")
+    printf "%-20s %-10s %-12s %s\n" "$name" "$tag" "$size" "$created"
+done
