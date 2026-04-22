@@ -2,3 +2,6 @@ bin/
 etc/
 .context_cache/
 code_context.txt
+root/alpine-rootfs.tgz
+*.tgz
+examples/**/*.tgz
